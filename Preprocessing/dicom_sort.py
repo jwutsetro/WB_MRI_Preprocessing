@@ -167,6 +167,13 @@ class DicomSorter:
             reader.SetFileNames(sorted_files)
             image = reader.Execute()
             image = self._orient_image(image, self.cfg.target_orientation)
+        # apply background threshold if configured for this rule
+        if rule.background_threshold is not None:
+            oriented_image = image
+            arr = sitk.GetArrayFromImage(oriented_image).astype(np.float32)
+            arr = np.where(arr < rule.background_threshold, 0.0, arr)
+            image = sitk.GetImageFromArray(arr)
+            image.CopyInformation(oriented_image)
         modality_name = rule.canonical_modality or rule.output_modality
         is_dwi = (rule.canonical_modality or rule.output_modality).lower() == "dwi"
         # Only DWI uses b-value as modality folder

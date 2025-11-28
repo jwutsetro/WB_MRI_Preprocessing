@@ -34,6 +34,7 @@ class SequenceRule:
     expect_stations: bool = True
     target_orientation: str = "LPS"
     keep_all_series: bool = False
+    background_threshold: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> "SequenceRule":
@@ -49,6 +50,7 @@ class SequenceRule:
             expect_stations=data.get("expect_stations", True),
             target_orientation=data.get("target_orientation", "LPS"),
             keep_all_series=data.get("keep_all_series", False),
+            background_threshold=data.get("background_threshold"),
         )
 
 

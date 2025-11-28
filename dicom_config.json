@@ -3,7 +3,8 @@
     "name": "t1",
     "description_contains": ["3D_T1_TSE", "T1"],
     "output_modality": "T1",
-    "is_anatomical": true
+    "is_anatomical": true,
+    "background_threshold": 20
   },
   {
     "name": "dixon_ip",
@@ -11,38 +12,44 @@
     "output_modality": "Dixon_IP",
     "is_anatomical": true,
     "type_tag": "2005|1011",
-    "include_types": ["IP"]
+    "include_types": ["IP"],
+    "background_threshold": 20
   },
   {
     "name": "dixon_op",
     "description_contains": ["mDIXON"],
     "output_modality": "Dixon_OP",
     "type_tag": "2005|1011",
-    "include_types": ["OP"]
+    "include_types": ["OP"],
+    "background_threshold": 20
   },
   {
     "name": "dixon_w",
     "description_contains": ["mDIXON"],
     "output_modality": "Dixon_W",
     "type_tag": "2005|1011",
-    "include_types": ["W", "W "]
+    "include_types": ["W", "W "],
+    "background_threshold": 20
   },
   {
     "name": "dixon_f",
     "description_contains": ["mDIXON"],
     "output_modality": "Dixon_F",
     "type_tag": "2005|1011",
-    "include_types": ["F", "F "]
+    "include_types": ["F", "F "],
+    "background_threshold": 20
   },
   {
     "name": "t2",
     "description_contains": ["T2"],
-    "output_modality": "T2"
+    "output_modality": "T2",
+    "background_threshold": 20
   },
   {
     "name": "dwi",
     "description_contains": ["DWIBS", "DWI"],
     "output_modality": "DWI",
-    "b_value_tag": "0018|9087"
+    "b_value_tag": "0018|9087",
+    "background_threshold": 20
   }
 ]
