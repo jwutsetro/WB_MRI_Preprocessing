@@ -8,6 +8,7 @@ import SimpleITK as sitk
 from tqdm import tqdm
 
 from Preprocessing.config import PipelineConfig
+from Preprocessing.adc import compute_adc_for_patient
 from Preprocessing.dicom_sort import DicomSorter
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 
@@ -103,29 +104,7 @@ class PipelineRunner:
             self._run_resample_to_t1(patient_output)
 
     def _run_adc(self, patient_output: Path) -> None:
-        # DWI modalities are folders named by b-value (e.g., patient/1000/)
-        dwi_dirs = [p for p in patient_output.iterdir() if p.is_dir() and p.name.isdigit()]
-        if not dwi_dirs:
-            return
-        # Collect per-station across b-values
-        station_map: dict[str, List[tuple[float, Path]]] = {}
-        for b_dir in dwi_dirs:
-            try:
-                b_val = float(b_dir.name)
-            except ValueError:
-                continue
-            for file in sorted(b_dir.glob("*.nii*")):
-                station_map.setdefault(file.stem, []).append((b_val, file))
-        for station, b_list in station_map.items():
-            if len(b_list) < 2:
-                continue
-            b_list.sort(key=lambda x: x[0])
-            b_values = [b for b, _ in b_list]
-            b_images = [sitk.ReadImage(str(path)) for _, path in b_list]
-            adc_image = compute_adc(b_images, b_values)
-            adc_dir = patient_output / "ADC"
-            adc_dir.mkdir(parents=True, exist_ok=True)
-            sitk.WriteImage(adc_image, str(adc_dir / f"{station}.nii.gz"), True)
+        compute_adc_for_patient(patient_output)
 
     def _run_bias(self, patient_output: Path) -> None:
         for image_path in patient_output.rglob("*.nii*"):

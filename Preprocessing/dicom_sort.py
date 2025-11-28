@@ -211,21 +211,28 @@ class DicomSorter:
                 }
             )
 
-        # Station ordering per canonical modality by origin z
+        # Station ordering per canonical modality by origin z, consistent across b-values
         by_modality: Dict[str, List[Dict]] = {}
         for entry in temp_entries:
             canonical = entry["rule"].canonical_modality or entry["rule"].output_modality
             by_modality.setdefault(canonical, []).append(entry)
         for canonical, entries in by_modality.items():
-            entries.sort(key=lambda e: e["origin"][2])
-            for idx, entry in enumerate(entries, start=1):
+            # order stations by origin using series UID as key
+            series_order: Dict[str, int] = {}
+            series_origins: Dict[str, float] = {}
+            for entry in entries:
+                series_origins.setdefault(entry["series_uid"], entry["origin"][2])
+            for idx, (series_uid, _) in enumerate(sorted(series_origins.items(), key=lambda kv: kv[1]), start=1):
+                series_order[series_uid] = idx
+            for entry in entries:
                 rule: SequenceRule = entry["rule"]
+                station_idx = series_order.get(entry["series_uid"], 0)
                 written_path, image = self._write_series(
                     rule=rule,
                     b_value=entry["b_value"],
                     instances=entry["instances"],
                     patient_output=output_dir,
-                    station_idx=idx,
+                    station_idx=station_idx,
                     image=entry["image"],
                 )
                 written.append(written_path)
@@ -236,7 +243,7 @@ class DicomSorter:
                         "canonical_modality": canonical,
                         "series_uid": entry["series_uid"],
                         "b_value": entry["b_value"],
-                        "station_index": idx,
+                        "station_index": station_idx,
                         "file": str(written_path.relative_to(output_dir)),
                         "series_description": entry["instances"][0].series_description,
                         "protocol_name": entry["instances"][0].protocol_name,
