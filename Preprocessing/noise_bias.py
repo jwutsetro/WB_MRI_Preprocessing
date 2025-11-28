@@ -26,6 +26,9 @@ def process_patient(patient_dir: Path) -> None:
     """Run noise/bias correction on all NIfTI files under a patient directory."""
     image_paths = sorted(patient_dir.rglob("*.nii*"))
     for image_path in image_paths:
+        # Skip ADC outputs to avoid corrupting quantitative values
+        if any(part.lower() == "adc" for part in image_path.parts):
+            continue
         image = sitk.ReadImage(str(image_path))
         corrected = apply_bias_correction(image)
         sitk.WriteImage(corrected, str(image_path), True)
@@ -37,4 +40,3 @@ def process_root(root_dir: Path) -> None:
     for patient in patients:
         print(f"[Noise/Bias] Processing {patient.name}")
         process_patient(patient)
-
