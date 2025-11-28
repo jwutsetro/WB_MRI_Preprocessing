@@ -10,6 +10,7 @@ from tqdm import tqdm
 from Preprocessing.config import PipelineConfig
 from Preprocessing.adc import compute_adc_for_patient
 from Preprocessing.dicom_sort import DicomSorter
+from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 
 
@@ -26,40 +27,6 @@ def resample_to_reference(image: sitk.Image, reference: sitk.Image, interpolator
     resample.SetReferenceImage(reference)
     resample.SetInterpolator(interpolator)
     return resample.Execute(image)
-
-
-def apply_bias_correction(image: sitk.Image) -> sitk.Image:
-    image = sitk.Cast(image, sitk.sitkFloat32)
-    diffusion = sitk.GradientAnisotropicDiffusionImageFilter()
-    diffusion.SetConductanceParameter(4)
-    diffusion.SetNumberOfIterations(10)
-    diffusion.SetTimeStep(0.01)
-    smoothed = diffusion.Execute(image)
-    mask = sitk.BinaryThreshold(smoothed, lowerThreshold=5, upperThreshold=sitk.GetArrayFromImage(smoothed).max(), insideValue=1, outsideValue=0)
-    bias = sitk.N4BiasFieldCorrectionImageFilter()
-    corrected = bias.Execute(smoothed, sitk.Cast(mask, sitk.sitkUInt8))
-    return sitk.Cast(corrected, sitk.sitkFloat32)
-
-
-def compute_adc(b_images: List[sitk.Image], b_values: List[float]) -> sitk.Image:
-    if len(b_images) != len(b_values):
-        raise ValueError("b_images and b_values must align.")
-    log_images = [np.log(np.maximum(sitk.GetArrayFromImage(im).astype(np.float32), 1e-6)) for im in b_images]
-    mean_b = float(np.mean(b_values))
-    diff_b = np.array([mean_b - b for b in b_values], dtype=np.float32)
-    numerator = sum((img - np.mean(log_images, axis=0)) * diff for img, diff in zip(log_images, diff_b))
-    denominator = float(np.sum(diff_b * diff_b))
-    adc = (numerator / max(denominator, 1e-6)) * 1e6
-    adc_image = sitk.GetImageFromArray(adc.astype(np.float32))
-    adc_image.CopyInformation(b_images[0])
-    return adc_image
-
-
-def _load_images(modality_dir: Path) -> List[sitk.Image]:
-    images = []
-    for file in sorted(modality_dir.glob("*.nii*")):
-        images.append(sitk.ReadImage(str(file)))
-    return images
 
 
 class PipelineRunner:
@@ -107,10 +74,7 @@ class PipelineRunner:
         compute_adc_for_patient(patient_output)
 
     def _run_bias(self, patient_output: Path) -> None:
-        for image_path in patient_output.rglob("*.nii*"):
-            image = sitk.ReadImage(str(image_path))
-            corrected = apply_bias_correction(image)
-            sitk.WriteImage(corrected, str(image_path), True)
+        run_noise_bias(patient_output)
 
     def _run_isis(self, patient_output: Path) -> None:
         for modality_dir in patient_output.iterdir():

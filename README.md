@@ -38,6 +38,10 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    ```bash
    python compute_adc.py /path/to/output_root
    ```
+7. Run noise/bias correction only:
+   ```bash
+   python noise_bias.py /path/to/output_root
+   ```
 
 ## Notes
 - Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
