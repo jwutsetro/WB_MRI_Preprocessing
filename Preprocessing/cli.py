@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
     scan_p.add_argument("--patient-dir", required=True, type=Path, help="Patient directory containing DICOMs")
     scan_p.add_argument("--output", type=Path, default=None, help="Optional JSON output for matched files")
 
+    convert_p = sub.add_parser("convert-dicom", help="Convert DICOMs only using sequence rules")
+    convert_p.add_argument("input_dir", type=Path, help="Directory containing patient DICOM folders")
+    convert_p.add_argument("output_dir", type=Path, help="Directory to write NIfTI outputs")
+    convert_p.add_argument("--config", type=Path, default=Path("config/pipeline.example.yaml"), help="Pipeline config with sequence rules (default: config/pipeline.example.yaml)")
+    convert_p.add_argument("--interactive", action="store_true", help="Prompt for unknown sequences")
+
     return parser.parse_args()
 
 
@@ -48,6 +54,17 @@ def cmd_scan_sequences(args: argparse.Namespace) -> None:
         with open(args.output, "w", encoding="utf-8") as handle:
             json.dump([str(p) for p in matches], handle, indent=2)
 
+def cmd_convert_dicom(args: argparse.Namespace) -> None:
+    cfg = load_config(args.config)
+    cfg.input_dir = args.input_dir
+    cfg.output_dir = args.output_dir
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    sorter = DicomSorter(cfg, interactive=args.interactive)
+    patients = sorted([p for p in cfg.input_dir.iterdir() if p.is_dir()])
+    for patient in patients:
+        patient_out = cfg.output_dir / patient.name
+        sorter.sort_and_convert(patient, patient_out)
+
 
 def main() -> None:
     args = parse_args()
@@ -55,8 +72,9 @@ def main() -> None:
         cmd_run(args)
     elif args.command == "scan-sequences":
         cmd_scan_sequences(args)
+    elif args.command == "convert-dicom":
+        cmd_convert_dicom(args)
 
 
 if __name__ == "__main__":
     main()
-

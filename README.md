@@ -27,6 +27,13 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    ```bash
    python -m Preprocessing.cli scan-sequences --config config/pipeline.yaml --patient-dir /path/to/patient
    ```
+5. Convert DICOMs only:
+   ```bash
+   python convert_dicom.py /path/to/raw_dicoms /path/to/output \
+     --config config/pipeline.yaml
+   # or
+   python -m Preprocessing.cli convert-dicom /path/to/raw_dicoms /path/to/output --config config/pipeline.yaml
+   ```
 
 ## Notes
 - Outputs: `output_dir/<patient>/<modality>/<station>/file.nii.gz` (stations are numeric). DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
