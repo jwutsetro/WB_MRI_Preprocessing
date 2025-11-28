@@ -1,0 +1,29 @@
+(Transform "TranslationTransform")
+(NumberOfParameters 3)
+(TransformParameters -0.355390 0.230741 -19.065822)
+(InitialTransformParametersFileName "NoInitialTransform")
+(UseBinaryFormatForTransformationParameters "false")
+(HowToCombineTransforms "Compose")
+
+// Image specific
+(FixedImageDimension 3)
+(MovingImageDimension 3)
+(FixedInternalImagePixelType "float")
+(MovingInternalImagePixelType "float")
+(Size 768 1613 210)
+(Index 0 0 0)
+(Spacing 0.6510419846 0.6510419846 1.2000044584)
+(Origin -250.8520050049 -114.7040023804 241.0185394287)
+(Direction 0.9999970000 -0.0024637200 0.0007239480 0.0007176530 -0.0025552300 -0.9999960000 0.0024655600 0.9999940000 -0.0025534500)
+(UseDirectionCosines "true")
+
+// ResampleInterpolator specific
+(ResampleInterpolator "FinalBSplineInterpolator")
+(FinalBSplineInterpolationOrder 3)
+
+// Resampler specific
+(Resampler "DefaultResampler")
+(DefaultPixelValue 0.000000)
+(ResultImageFormat "mhd")
+(ResultImagePixelType "float")
+(CompressResultImage "false")

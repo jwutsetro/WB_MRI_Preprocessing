@@ -1,0 +1,82 @@
+// *****************
+// ** ImageTypes
+// *****************
+
+(FixedInternalImagePixelType "float")
+(MovingInternalImagePixelType "float")
+(FixedImageDimension 3)
+(MovingImageDimension 3)
+(UseDirectionCosines "true")
+
+// *****************
+// ** Components
+// *****************
+
+(Registration "MultiResolutionRegistration")
+(Interpolator "BSplineInterpolator")
+(ResampleInterpolator "FinalBSplineInterpolator")
+(Resampler "DefaultResampler")
+(FixedImagePyramid "FixedSmoothingImagePyramid")
+(MovingImagePyramid "MovingSmoothingImagePyramid")
+(Optimizer "AdaptiveStochasticGradientDescent")
+(Transform "TranslationTransform")
+(Metric "DisplacementMagnitudePenalty")
+
+// *****************
+// ** Metric Settings
+// *****************
+
+// *****************
+// ** Optimiser Settings
+// *****************
+
+(ASGDParameterEstimationMethod "Original")
+(NumberOfResolutions 2)
+(MaximumNumberOfIterations 2000)
+(AutomaticParameterEstimation "true")
+(MaximumStepLength 1)
+
+// *****************
+// ** Mask Settings
+// *****************
+
+(ErodeMask "false")
+
+// *****************
+// ** Transform Settings
+// *****************
+
+(HowToCombineTransforms "Compose")
+(AutomaticScalesEstimation "true")
+
+
+
+// *****************
+// ** Pyramid Settings
+// *****************
+
+(ImagePyramidSchedule 2 2 1 1 1 1)
+
+// *****************
+// ** Sampler Parameters
+// *****************
+
+(ImageSampler "RandomCoordinate")
+(NumberOfSpatialSamples 2048)
+(CheckNumberOfSamples "true")
+(NewSamplesEveryIteration "true")
+(UseRandomSampleRegion "false")
+(MaximumNumberOfSamplingAttempts 10)
+(BSplineInterpolationOrder 1)
+(FinalBSplineInterpolationOrder 3)
+(RequiredRatioOfValidSamples 0.1)
+(UseFastAndLowMemoryVersion "true")
+
+// *****************
+// ** Output Settings
+// *****************
+
+(WriteTransformParametersEachIteration "false" )(DefaultPixelValue 0)
+(WriteResultImage "false")
+(ResultImagePixelType "float")
+(ResultImageFormat "mhd")
