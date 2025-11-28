@@ -6,9 +6,6 @@ from typing import Dict, List, Optional, Tuple
 import SimpleITK as sitk
 
 
-PARAM_FILE = Path(__file__).parent / "param_files" / "S2S.txt"
-
-
 def _overlap_indices(fixed: sitk.Image, moving: sitk.Image) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
     spacing_f = fixed.GetSpacing()
     spacing_m = moving.GetSpacing()
@@ -49,25 +46,45 @@ def _mask_from_indices(image: sitk.Image, idx: Tuple[int, int]) -> sitk.Image:
     return mask
 
 
-def _register_pair(fixed: sitk.Image, moving: sitk.Image, mask: Optional[sitk.Image]) -> sitk.ParameterMap:
-    elastix = sitk.ElastixImageFilter()
-    elastix.LogToConsoleOff()
-    elastix.SetFixedImage(fixed)
-    elastix.SetMovingImage(moving)
+def _translation_registration(
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    mask: Optional[sitk.Image] = None,
+    scales: Tuple[float, float, float] = (1.0, 1.0, 1000.0),
+    shrink_factors: Tuple[int, int, int] = (4, 2, 1),
+    smoothing_sigmas: Tuple[int, int, int] = (2, 1, 0),
+) -> sitk.Transform:
+    tx = sitk.TranslationTransform(3)
+    R = sitk.ImageRegistrationMethod()
+    R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    R.SetMetricSamplingStrategy(R.RANDOM)
+    R.SetMetricSamplingPercentage(0.2)
     if mask is not None:
-        elastix.SetFixedMask(mask)
-    elastix.SetParameterMap(sitk.ReadParameterFile(str(PARAM_FILE)))
-    elastix.Execute()
-    return elastix.GetTransformParameterMap()[0]
+        R.SetMetricFixedMask(mask)
+    R.SetInterpolator(sitk.sitkLinear)
+    R.SetOptimizerAsRegularStepGradientDescent(
+        learningRate=2.0,
+        minStep=1e-4,
+        numberOfIterations=200,
+        relaxationFactor=0.5,
+    )
+    R.SetOptimizerScales(scales)
+    R.SetInitialTransform(tx, inPlace=False)
+    R.SetShrinkFactorsPerLevel(shrinkFactors=shrink_factors)
+    R.SetSmoothingSigmasPerLevel(smoothing_sigmas)
+    R.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+    return R.Execute(fixed, moving)
 
 
-def _apply_transform(image: sitk.Image, parammap: sitk.ParameterMap) -> sitk.Image:
-    transformix = sitk.TransformixImageFilter()
-    transformix.LogToConsoleOff()
-    transformix.SetTransformParameterMap(parammap)
-    transformix.SetMovingImage(image)
-    transformix.Execute()
-    return transformix.GetResultImage()
+def _apply_transform(image: sitk.Image, reference: sitk.Image, transform: sitk.Transform) -> sitk.Image:
+    return sitk.Resample(
+        image,
+        reference,
+        transform,
+        sitk.sitkLinear,
+        0.0,
+        image.GetPixelID(),
+    )
 
 
 def _sorted_station_files(modality_dir: Path) -> List[Path]:
@@ -77,6 +94,7 @@ def _sorted_station_files(modality_dir: Path) -> List[Path]:
 
 
 def register_patient(patient_dir: Path) -> None:
+    """Inter-station registration using ADC overlaps; transforms applied to all b-values."""
     adc_dir = patient_dir / "ADC"
     if not adc_dir.exists():
         return
@@ -94,13 +112,10 @@ def register_patient(patient_dir: Path) -> None:
         moving_image = adc_images[f.stem]
         overlap = _overlap_indices(ref_image, moving_image)
         mask = _mask_from_indices(ref_image, overlap[0]) if overlap else None
-        parammap = _register_pair(ref_image, moving_image, mask)
-        # apply to ADC
-        moved_adc = _apply_transform(moving_image, parammap)
+        transform = _translation_registration(ref_image, moving_image, mask)
+        moved_adc = _apply_transform(moving_image, ref_image, transform)
         sitk.WriteImage(moved_adc, str(f), True)
-        # apply to all b-value modalities
-        _apply_transform_to_bvalues(patient_dir, f.stem, parammap)
-        # update reference
+        _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
         ref_image = moved_adc
 
     # propagate downward
@@ -109,14 +124,14 @@ def register_patient(patient_dir: Path) -> None:
         moving_image = adc_images[f.stem]
         overlap = _overlap_indices(ref_image, moving_image)
         mask = _mask_from_indices(ref_image, overlap[0]) if overlap else None
-        parammap = _register_pair(ref_image, moving_image, mask)
-        moved_adc = _apply_transform(moving_image, parammap)
+        transform = _translation_registration(ref_image, moving_image, mask)
+        moved_adc = _apply_transform(moving_image, ref_image, transform)
         sitk.WriteImage(moved_adc, str(f), True)
-        _apply_transform_to_bvalues(patient_dir, f.stem, parammap)
+        _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
         ref_image = moved_adc
 
 
-def _apply_transform_to_bvalues(patient_dir: Path, station: str, parammap: sitk.ParameterMap) -> None:
+def _apply_transform_to_bvalues(patient_dir: Path, station: str, reference: sitk.Image, transform: sitk.Transform) -> None:
     for modality_dir in patient_dir.iterdir():
         if not modality_dir.is_dir():
             continue
@@ -126,5 +141,24 @@ def _apply_transform_to_bvalues(patient_dir: Path, station: str, parammap: sitk.
         if not target.exists():
             continue
         img = sitk.ReadImage(str(target))
-        moved = _apply_transform(img, parammap)
+        moved = _apply_transform(img, reference, transform)
         sitk.WriteImage(moved, str(target), True)
+
+
+def register_wholebody_adc_to_t1(patient_dir: Path) -> None:
+    t1_wb = patient_dir / "T1_WB.nii.gz"
+    adc_wb = patient_dir / "ADC_WB.nii.gz"
+    if not t1_wb.exists() or not adc_wb.exists():
+        return
+    fixed = sitk.ReadImage(str(t1_wb))
+    moving = sitk.ReadImage(str(adc_wb))
+    transform = _translation_registration(
+        fixed,
+        moving,
+        mask=None,
+        scales=(1.0, 1.0, 500.0),
+        shrink_factors=(4, 2, 1),
+        smoothing_sigmas=(2, 1, 0),
+    )
+    moved_adc = _apply_transform(moving, fixed, transform)
+    sitk.WriteImage(moved_adc, str(adc_wb), True)

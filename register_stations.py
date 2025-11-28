@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run inter-station registration for all patients (ADC-driven, applied to all b-values).
+Run inter-station registration for all patients (ADC-driven, SimpleITK ImageRegistrationMethod).
 Usage:
     python register_stations.py /path/to/output_root
 """
