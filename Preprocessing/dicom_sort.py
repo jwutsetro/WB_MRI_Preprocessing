@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -166,12 +165,16 @@ class DicomSorter:
             reader.SetFileNames(sorted_files)
             image = reader.Execute()
             image = self._orient_image(image, self.cfg.target_orientation)
-        modality_dir = patient_output / (rule.canonical_modality or rule.output_modality) / f"{station_idx:02d}"
-        modality_dir.mkdir(parents=True, exist_ok=True)
+        modality_name = rule.canonical_modality or rule.output_modality
+        # For DWI, use the b-value as modality name (e.g., patient/1000/1.nii.gz)
         if b_value:
-            filename = f"b{b_value}.nii.gz"
-        else:
-            filename = f"{rule.name}.nii.gz"
+            try:
+                modality_name = str(int(float(b_value)))
+            except Exception:
+                modality_name = b_value
+        modality_dir = patient_output / modality_name
+        modality_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{station_idx}.nii.gz"
         output_path = modality_dir / filename
         sitk.WriteImage(image, str(output_path), True)
         return output_path, image
@@ -182,6 +185,8 @@ class DicomSorter:
         grouped = self._group_instances(instances)
         written: List[Path] = []
         modality_entries: Dict[str, List[Dict]] = {}
+        all_dicoms: set[Path] = set(p for p in patient_dir.rglob("*") if p.is_file())
+        used_dicoms: set[Path] = set()
 
         # First pass: read and orient to gather origins for ordering
         temp_entries = []
@@ -221,6 +226,7 @@ class DicomSorter:
                     image=entry["image"],
                 )
                 written.append(written_path)
+                used_dicoms.update(inst.filepath for inst in entry["instances"])
                 modality_entries.setdefault(canonical, []).append(
                     {
                         "rule": rule.name,
@@ -239,6 +245,7 @@ class DicomSorter:
                 )
 
         self._write_metadata(output_dir, patient_dir.name, modality_entries)
+        self._report_unused(patient_dir, used_dicoms, all_dicoms)
         return written
 
     def _write_metadata(self, patient_output: Path, patient_id: str, modality_entries: Dict[str, List[Dict]]) -> None:
@@ -264,3 +271,10 @@ class DicomSorter:
             },
         }
         meta_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    def _report_unused(self, patient_dir: Path, used: set[Path], all_files: set[Path]) -> None:
+        unused = sorted(all_files - used)
+        if unused:
+            print(f"[WARN] Unused DICOMs for patient {patient_dir.name}: {len(unused)} files")
+        else:
+            print(f"[OK] All DICOMs converted for patient {patient_dir.name}")

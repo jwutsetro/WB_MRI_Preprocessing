@@ -49,7 +49,7 @@ sequences:
     type_tag: 2005|1011
     include_types:
       - IP
-    output_modality: DixonIP
+    output_modality: Dixon_IP
     canonical_modality: T1
     is_anatomical: true
     expect_stations: true
@@ -59,7 +59,7 @@ sequences:
     type_tag: 2005|1011
     include_types:
       - OP
-    output_modality: DixonOP
+    output_modality: Dixon_OP
     canonical_modality: T1
     expect_stations: true
   - name: t2_dixon

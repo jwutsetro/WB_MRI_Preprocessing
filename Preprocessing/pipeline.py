@@ -103,28 +103,29 @@ class PipelineRunner:
             self._run_resample_to_t1(patient_output)
 
     def _run_adc(self, patient_output: Path) -> None:
-        dwi_dir = patient_output / "DWI"
-        if not dwi_dir.exists():
+        # DWI modalities are folders named by b-value (e.g., patient/1000/)
+        dwi_dirs = [p for p in patient_output.iterdir() if p.is_dir() and p.name.isdigit()]
+        if not dwi_dirs:
             return
-        for station_dir in sorted(dwi_dir.glob("[0-9][0-9]")):
-            b_files = sorted(station_dir.glob("b*.nii*"))
-            if len(b_files) < 2:
+        # Collect per-station across b-values
+        station_map: dict[str, List[tuple[float, Path]]] = {}
+        for b_dir in dwi_dirs:
+            try:
+                b_val = float(b_dir.name)
+            except ValueError:
                 continue
-            b_values = []
-            b_images = []
-            for file in b_files:
-                try:
-                    b_val = float(file.stem.lstrip("b"))
-                except ValueError:
-                    continue
-                b_values.append(b_val)
-                b_images.append(sitk.ReadImage(str(file)))
-            if len(b_images) < 2:
+            for file in sorted(b_dir.glob("*.nii*")):
+                station_map.setdefault(file.stem, []).append((b_val, file))
+        for station, b_list in station_map.items():
+            if len(b_list) < 2:
                 continue
+            b_list.sort(key=lambda x: x[0])
+            b_values = [b for b, _ in b_list]
+            b_images = [sitk.ReadImage(str(path)) for _, path in b_list]
             adc_image = compute_adc(b_images, b_values)
-            adc_dir = patient_output / "ADC" / station_dir.name
+            adc_dir = patient_output / "ADC"
             adc_dir.mkdir(parents=True, exist_ok=True)
-            sitk.WriteImage(adc_image, str(adc_dir / "adc.nii.gz"), True)
+            sitk.WriteImage(adc_image, str(adc_dir / f"{station}.nii.gz"), True)
 
     def _run_bias(self, patient_output: Path) -> None:
         for image_path in patient_output.rglob("*.nii*"):
@@ -136,37 +137,34 @@ class PipelineRunner:
         for modality_dir in patient_output.iterdir():
             if not modality_dir.is_dir():
                 continue
-            # collect per filename across stations
-            file_map: dict[str, List[tuple[Path, sitk.Image]]] = {}
-            for station_dir in sorted(modality_dir.glob("[0-9][0-9]")):
-                for file in sorted(station_dir.glob("*.nii*")):
-                    file_map.setdefault(file.name, []).append((file, sitk.ReadImage(str(file))))
-            for files in file_map.values():
-                if len(files) <= 1:
-                    continue
-                means = [np.mean(sitk.GetArrayFromImage(im)[sitk.GetArrayFromImage(im) > 5]) for _, im in files]
-                target_mean = float(np.median(means))
-                for (path, img), mean_val in zip(files, means):
-                    scale = target_mean / max(mean_val, 1e-6)
-                    scaled = sitk.Cast(img, sitk.sitkFloat32) * scale
-                    scaled.CopyInformation(img)
-                    sitk.WriteImage(scaled, str(path), True)
+            files = sorted(modality_dir.glob("*.nii*"))
+            if len(files) <= 1:
+                continue
+            images = [sitk.ReadImage(str(f)) for f in files]
+            means = [np.mean(sitk.GetArrayFromImage(im)[sitk.GetArrayFromImage(im) > 5]) for im in images]
+            target_mean = float(np.median(means))
+            for path, img, mean_val in zip(files, images, means):
+                scale = target_mean / max(mean_val, 1e-6)
+                scaled = sitk.Cast(img, sitk.sitkFloat32) * scale
+                scaled.CopyInformation(img)
+                sitk.WriteImage(scaled, str(path), True)
 
     def _run_registration(self, patient_output: Path) -> None:
-        t1 = patient_output / "T1"
-        dwi = patient_output / "DWI"
-        if not t1.exists() or not dwi.exists():
+        t1_dir = patient_output / "T1"
+        if not t1_dir.exists():
             return
-        for station_dir in sorted(dwi.glob("[0-9][0-9]")):
-            # pick first available T1 in matching station
-            t1_station = t1 / station_dir.name
-            if not t1_station.exists():
+        t1_files = {f.stem: f for f in t1_dir.glob("*.nii*")}
+        # register ADC and numeric b-value modalities to T1
+        for modality_dir in patient_output.iterdir():
+            if modality_dir == t1_dir or not modality_dir.is_dir():
                 continue
-            t1_files = sorted(t1_station.glob("*.nii*"))
-            if not t1_files:
+            if not (modality_dir.name.isdigit() or modality_dir.name == "ADC"):
                 continue
-            reference = sitk.ReadImage(str(t1_files[0]))
-            for file in sorted(station_dir.glob("*.nii*")):
+            for file in sorted(modality_dir.glob("*.nii*")):
+                station = file.stem
+                if station not in t1_files:
+                    continue
+                reference = sitk.ReadImage(str(t1_files[station]))
                 moving = sitk.ReadImage(str(file))
                 transform = sitk.CenteredTransformInitializer(reference, moving, sitk.Euler3DTransform())
                 registered = sitk.Resample(moving, reference, transform, sitk.sitkLinear, 0.0, moving.GetPixelID())
@@ -176,37 +174,32 @@ class PipelineRunner:
         for modality_dir in patient_output.iterdir():
             if not modality_dir.is_dir():
                 continue
-            # Build per-file stacks across stations
-            file_map: dict[str, List[Path]] = {}
-            for station_dir in sorted(modality_dir.glob("[0-9][0-9]")):
-                for file in sorted(station_dir.glob("*.nii*")):
-                    file_map.setdefault(file.name, []).append(file)
-            for filename, station_files in file_map.items():
-                if len(station_files) <= 1:
-                    continue
-                station_images = [sitk.ReadImage(str(p)) for p in station_files]
-                spacing = station_images[0].GetSpacing()
-                size_x, size_y = station_images[0].GetSize()[:2]
-                total_z = sum(im.GetSize()[2] for im in station_images)
-                output = sitk.Image(size_x, size_y, total_z, sitk.sitkFloat32)
-                output.SetSpacing(spacing)
-                output.SetOrigin(station_images[0].GetOrigin())
-                output.SetDirection(station_images[0].GetDirection())
-                current_z = 0
-                paste = sitk.PasteImageFilter()
-                for image in station_images:
-                    size = image.GetSize()
-                    paste.SetDestinationIndex([0, 0, current_z])
-                    paste.SetSourceIndex([0, 0, 0])
-                    paste.SetSourceSize(size)
-                    output = paste.Execute(output, image)
-                    current_z += size[2]
-                stem = Path(filename).stem
-                sitk.WriteImage(output, str(patient_output / f"{modality_dir.name}_{stem}_WB.nii.gz"), True)
+            station_files = sorted(modality_dir.glob("*.nii*"))
+            if len(station_files) <= 1:
+                continue
+            station_files.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
+            station_images = [sitk.ReadImage(str(p)) for p in station_files]
+            spacing = station_images[0].GetSpacing()
+            size_x, size_y = station_images[0].GetSize()[:2]
+            total_z = sum(im.GetSize()[2] for im in station_images)
+            output = sitk.Image(size_x, size_y, total_z, sitk.sitkFloat32)
+            output.SetSpacing(spacing)
+            output.SetOrigin(station_images[0].GetOrigin())
+            output.SetDirection(station_images[0].GetDirection())
+            current_z = 0
+            paste = sitk.PasteImageFilter()
+            for image in station_images:
+                size = image.GetSize()
+                paste.SetDestinationIndex([0, 0, current_z])
+                paste.SetSourceIndex([0, 0, 0])
+                paste.SetSourceSize(size)
+                output = paste.Execute(output, image)
+                current_z += size[2]
+            sitk.WriteImage(output, str(patient_output / f"{modality_dir.name}_WB.nii.gz"), True)
 
     def _run_resample_to_t1(self, patient_output: Path) -> None:
-        t1_candidates = sorted(patient_output.glob("T1_*_WB.nii.gz"))
-        adc_candidates = sorted(patient_output.glob("ADC_*_WB.nii.gz"))
+        t1_candidates = sorted(patient_output.glob("T1_WB.nii.gz"))
+        adc_candidates = sorted(patient_output.glob("ADC_WB.nii.gz"))
         if not t1_candidates or not adc_candidates:
             return
         reference = sitk.ReadImage(str(t1_candidates[0]))
@@ -221,7 +214,7 @@ class PipelineRunner:
         model_dir.mkdir(parents=True, exist_ok=True)
         for modality in self.cfg.nyul.modalities:
             images: List[sitk.Image] = []
-            modality_files = sorted(output_root.glob(f"*/*{modality}_WB.nii.gz")) + sorted(output_root.glob(f"*/*{modality}_*_WB.nii.gz"))
+            modality_files = sorted(output_root.glob(f"*/*{modality}_WB.nii.gz"))
             for file in modality_files:
                 images.append(sitk.ReadImage(str(file)))
             if not images:

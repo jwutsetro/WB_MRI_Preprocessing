@@ -12,7 +12,7 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 
 ## Conventions
 - Orientations default to `LPS`; adjust in config if needed.
-- Outputs live under `output_dir/<patient>/<modality>/<station>/file.nii.gz` (numeric stations); whole-body merges land as `<modality>_<file>_WB.nii.gz`.
+- Outputs live under `output_dir/<patient>/<modality>/<station>.nii.gz` (numeric stations); DWI b-values become modality folder names (e.g., `/<patient>/1000/1.nii.gz`). Whole-body merges land as `<modality>_WB.nii.gz`.
 - Per-patient metadata in `output_dir/<patient>/metadata.json` (series mapping, station counts, b-values, anatomical modalities).
 - Unknown series are appended to `logs/unknown_sequences.jsonl`; in interactive mode the CLI prompts for mapping.
 - Canonical modality mapping via `canonical_modality` in config (e.g., mDIXON → T1); `is_anatomical` flags anatomical references.
