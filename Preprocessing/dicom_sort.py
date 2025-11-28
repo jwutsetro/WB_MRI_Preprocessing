@@ -134,6 +134,8 @@ class DicomSorter:
                 "type_value": instance.type_value or "",
                 "b_value": instance.b_value or "",
             }
+            # include raw DICOM tags captured during collection (e.g., 2005|1011 for mDIXON types)
+            meta.update(instance.metadata)
             rule = self.detector.match(instance.series_description, meta)
             if rule is None and self.interactive:
                 rule = self._prompt_rule(instance)
