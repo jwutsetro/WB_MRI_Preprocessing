@@ -166,8 +166,9 @@ class DicomSorter:
             image = reader.Execute()
             image = self._orient_image(image, self.cfg.target_orientation)
         modality_name = rule.canonical_modality or rule.output_modality
-        # For DWI, use the b-value as modality name (e.g., patient/1000/1.nii.gz)
-        if b_value:
+        is_dwi = (rule.canonical_modality or rule.output_modality).lower() == "dwi"
+        # Only DWI uses b-value as modality folder
+        if is_dwi and b_value:
             try:
                 modality_name = str(int(float(b_value)))
             except Exception:

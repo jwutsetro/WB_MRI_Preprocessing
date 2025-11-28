@@ -50,7 +50,6 @@ sequences:
     include_types:
       - IP
     output_modality: Dixon_IP
-    canonical_modality: T1
     is_anatomical: true
     expect_stations: true
   - name: dixon_out_phase
@@ -60,7 +59,6 @@ sequences:
     include_types:
       - OP
     output_modality: Dixon_OP
-    canonical_modality: T1
     expect_stations: true
   - name: t2_dixon
     description_contains:
