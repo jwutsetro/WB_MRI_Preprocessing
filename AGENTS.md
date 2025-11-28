@@ -4,7 +4,7 @@
 Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, convert, create ADC, denoise/bias correct, inter-station intensity standardise (ISIS), register functional to anatomical, reconstruct whole-body, resample, and apply Nyul histogram standardisation.
 
 ## Key Modules
-- `Preprocessing/config.py`: YAML-driven configuration (paths, sequence rules, steps, Nyul settings).
+- `Preprocessing/config.py`: YAML-driven configuration (paths, steps, Nyul settings) plus loader for JSON DICOM rules.
 - `Preprocessing/dicom_sort.py`: Maps DICOM series to modalities using `SequenceRule`, logs unknown sequences, writes station NIfTI files.
 - `Preprocessing/pipeline.py`: Orchestrates steps, supports SLURM array sharding.
 - `Preprocessing/nyul.py`: Lightweight Nyul model fit/apply with JSON persistence.
@@ -15,7 +15,7 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 - Outputs live under `output_dir/<patient>/<modality>/<station>.nii.gz` (numeric stations); DWI b-values become modality folder names (e.g., `/<patient>/1000/1.nii.gz`). Whole-body merges land as `<modality>_WB.nii.gz`.
 - Per-patient metadata in `output_dir/<patient>/metadata.json` (series mapping, station counts, b-values, anatomical modalities).
 - Unknown series are appended to `logs/unknown_sequences.jsonl`; in interactive mode the CLI prompts for mapping.
-- Canonical modality mapping via `canonical_modality` in config (e.g., mDIXON → T1); `is_anatomical` flags anatomical references.
+- Sequence rules live in `dicom_config.json`; update that file to add/adjust mappings (e.g., Dixon_IP/OP/W/F, DWI).
 
 ## Development
 - Add docstrings to all public functions/classes.

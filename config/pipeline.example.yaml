@@ -11,6 +11,8 @@ station_labels:
   - upper_feet
   - feet
 
+dicom_rules_path: dicom_config.json
+
 steps:
   dicom_sort: true
   adc: true
@@ -32,45 +34,3 @@ nyul:
     - T1
     - ADC
   refresh: false
-
-sequences:
-  - name: t1
-    description_contains:
-      - 3D_T1_TSE
-      - T1
-    output_modality: T1
-    canonical_modality: T1
-    is_anatomical: true
-    expect_stations: true
-    target_orientation: LPS
-  - name: dixon_in_phase
-    description_contains:
-      - mDIXON
-    type_tag: 2005|1011
-    include_types:
-      - IP
-    output_modality: Dixon_IP
-    is_anatomical: true
-    expect_stations: true
-  - name: dixon_out_phase
-    description_contains:
-      - mDIXON
-    type_tag: 2005|1011
-    include_types:
-      - OP
-    output_modality: Dixon_OP
-    expect_stations: true
-  - name: t2_dixon
-    description_contains:
-      - T2
-    output_modality: T2
-    canonical_modality: T2
-    expect_stations: true
-  - name: dwi
-    description_contains:
-      - DWIBS
-      - DWI
-    output_modality: DWI
-    canonical_modality: DWI
-    b_value_tag: 0018|9087
-    expect_stations: true

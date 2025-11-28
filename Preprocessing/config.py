@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -100,6 +101,7 @@ class PipelineConfig:
     target_orientation: str = "LPS"
     station_labels: List[str] = field(default_factory=lambda: DEFAULT_STATION_LABELS.copy())
     unknown_sequence_log: Path = Path("logs/unknown_sequences.jsonl")
+    dicom_rules_path: Path = Path("dicom_config.json")
     sequence_rules: List[SequenceRule] = field(default_factory=list)
     steps: StepConfig = field(default_factory=StepConfig)
     nyul: NyulConfig = field(default_factory=NyulConfig)
@@ -108,7 +110,8 @@ class PipelineConfig:
     def from_dict(cls, data: Dict) -> "PipelineConfig":
         if "input_dir" not in data or "output_dir" not in data:
             raise ValueError("Configuration must define input_dir and output_dir.")
-        rules = [SequenceRule.from_dict(rule) for rule in data.get("sequences", [])]
+        rules_path = Path(data.get("dicom_rules_path", "dicom_config.json"))
+        rules = _load_sequence_rules(rules_path, data.get("sequences", []))
         steps = StepConfig.from_dict(data.get("steps", {}))
         nyul_cfg = NyulConfig.from_dict(data.get("nyul", {}))
         station_labels = data.get("station_labels", DEFAULT_STATION_LABELS)
@@ -119,6 +122,7 @@ class PipelineConfig:
             target_orientation=data.get("target_orientation", "LPS"),
             station_labels=station_labels,
             unknown_sequence_log=Path(data.get("unknown_sequence_log", "logs/unknown_sequences.jsonl")),
+            dicom_rules_path=rules_path,
             sequence_rules=rules,
             steps=steps,
             nyul=nyul_cfg,
@@ -132,3 +136,13 @@ def load_config(config_path: Optional[Path]) -> PipelineConfig:
     with open(config_path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     return PipelineConfig.from_dict(data)
+
+
+def _load_sequence_rules(path: Path, fallback_list: List[Dict]) -> List[SequenceRule]:
+    """Load sequence rules from JSON file; fallback to provided list for compatibility."""
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as handle:
+            raw_rules = json.load(handle) or []
+    else:
+        raw_rules = fallback_list or []
+    return [SequenceRule.from_dict(rule) for rule in raw_rules]

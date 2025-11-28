@@ -1,0 +1,48 @@
+[
+  {
+    "name": "t1",
+    "description_contains": ["3D_T1_TSE", "T1"],
+    "output_modality": "T1",
+    "is_anatomical": true
+  },
+  {
+    "name": "dixon_ip",
+    "description_contains": ["mDIXON"],
+    "output_modality": "Dixon_IP",
+    "is_anatomical": true,
+    "type_tag": "2005|1011",
+    "include_types": ["IP"]
+  },
+  {
+    "name": "dixon_op",
+    "description_contains": ["mDIXON"],
+    "output_modality": "Dixon_OP",
+    "type_tag": "2005|1011",
+    "include_types": ["OP"]
+  },
+  {
+    "name": "dixon_w",
+    "description_contains": ["mDIXON"],
+    "output_modality": "Dixon_W",
+    "type_tag": "2005|1011",
+    "include_types": ["W", "W "]
+  },
+  {
+    "name": "dixon_f",
+    "description_contains": ["mDIXON"],
+    "output_modality": "Dixon_F",
+    "type_tag": "2005|1011",
+    "include_types": ["F", "F "]
+  },
+  {
+    "name": "t2",
+    "description_contains": ["T2"],
+    "output_modality": "T2"
+  },
+  {
+    "name": "dwi",
+    "description_contains": ["DWIBS", "DWI"],
+    "output_modality": "DWI",
+    "b_value_tag": "0018|9087"
+  }
+]

@@ -4,7 +4,7 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 
 ## Layout
 - `Preprocessing/`: pipeline code (`config.py`, `dicom_sort.py`, `pipeline.py`, `nyul.py`, `cli.py`).
-- `config/pipeline.example.yaml`: editable template for sequence rules, paths, and step toggles.
+- `config/pipeline.example.yaml`: editable template for paths/step toggles; DICOM sequence rules live in `dicom_config.json`.
 - `tests/`: synthetic fast tests for core utilities.
 
 ## Quickstart
@@ -37,7 +37,7 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 
 ## Notes
 - Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
-- Known sequence names (e.g., T1 and mDIXON) are canonically mapped (default `canonical_modality: T1`) so downstream steps consume consistent names; Dixon variants keep their contrast names (e.g., `Dixon_IP`).
+- Known sequence names are defined in `dicom_config.json` (e.g., T1, DWI, Dixon_IP/OP/W/F). Update this file to add new sequences.
 - New/renamed sequences are logged; run with `--interactive` to map them on the fly.
 - All outputs are oriented to `LPS` by default; change `target_orientation` in the config if required.
 - Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists.
