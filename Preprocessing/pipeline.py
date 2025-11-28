@@ -13,6 +13,7 @@ from Preprocessing.dicom_sort import DicomSorter
 from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 from Preprocessing.isis import standardize_patient
+from Preprocessing.registration import register_patient
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
@@ -81,25 +82,7 @@ class PipelineRunner:
         standardize_patient(patient_output)
 
     def _run_registration(self, patient_output: Path) -> None:
-        t1_dir = patient_output / "T1"
-        if not t1_dir.exists():
-            return
-        t1_files = {f.stem: f for f in t1_dir.glob("*.nii*")}
-        # register ADC and numeric b-value modalities to T1
-        for modality_dir in patient_output.iterdir():
-            if modality_dir == t1_dir or not modality_dir.is_dir():
-                continue
-            if not (modality_dir.name.isdigit() or modality_dir.name == "ADC"):
-                continue
-            for file in sorted(modality_dir.glob("*.nii*")):
-                station = file.stem
-                if station not in t1_files:
-                    continue
-                reference = sitk.ReadImage(str(t1_files[station]))
-                moving = sitk.ReadImage(str(file))
-                transform = sitk.CenteredTransformInitializer(reference, moving, sitk.Euler3DTransform())
-                registered = sitk.Resample(moving, reference, transform, sitk.sitkLinear, 0.0, moving.GetPixelID())
-                sitk.WriteImage(registered, str(file), True)
+        register_patient(patient_output)
 
     def _run_reconstruct(self, patient_output: Path) -> None:
         for modality_dir in patient_output.iterdir():

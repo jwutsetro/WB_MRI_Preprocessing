@@ -46,6 +46,10 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    ```bash
    python ISIS.py /path/to/output_root
    ```
+9. Run inter-station registration (ADC-driven) only:
+   ```bash
+   python register_stations.py /path/to/output_root
+   ```
 
 ## Notes
 - Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
@@ -54,5 +58,6 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 - All outputs are oriented to `LPS` by default; change `target_orientation` in the config if required.
 - ADC computation fits log(S) vs b across all b-values (preferring >0), masks low-signal background (<0.01), clamps to 5.0, and scales by 1000.
 - ISIS scales stations linearly from the center outward so overlap regions share the same mean intensity (per modality; ADC is skipped).
+- Inter-station registration uses ADC station overlaps to compute rigid translations (scales penalize longitudinal shifts) and applies transforms to all b-value stations.
 - Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists.
 - Tests use synthetic data only: `pytest`.
