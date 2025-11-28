@@ -9,6 +9,7 @@ def test_unknown_sequence_logs(tmp_path: Path):
         name="t1",
         description_contains=["t1"],
         output_modality="T1",
+        canonical_modality="T1",
     )
     cfg = PipelineConfig(
         input_dir=tmp_path,
@@ -27,6 +28,7 @@ def test_known_sequence_matches(tmp_path: Path):
         name="dwi",
         description_contains=["dwibs", "dwi"],
         output_modality="DWI",
+        canonical_modality="DWI",
         b_value_tag="0018|9087",
     )
     cfg = PipelineConfig(
@@ -40,4 +42,3 @@ def test_known_sequence_matches(tmp_path: Path):
     match = detector.match("DWIBS axial", {"0018|9087": "1000"})
     assert match is not None
     assert match.output_modality == "DWI"
-

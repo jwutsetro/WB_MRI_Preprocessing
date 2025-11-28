@@ -25,6 +25,8 @@ class SequenceRule:
     name: str
     description_contains: List[str]
     output_modality: str
+    canonical_modality: Optional[str] = None
+    is_anatomical: bool = False
     type_tag: Optional[str] = None
     include_types: List[str] = field(default_factory=list)
     b_value_tag: Optional[str] = None
@@ -38,6 +40,8 @@ class SequenceRule:
             name=data["name"],
             description_contains=data.get("description_contains", []),
             output_modality=data["output_modality"],
+            canonical_modality=data.get("canonical_modality", data["output_modality"]),
+            is_anatomical=data.get("is_anatomical", False),
             type_tag=data.get("type_tag"),
             include_types=data.get("include_types", []),
             b_value_tag=data.get("b_value_tag"),
@@ -128,4 +132,3 @@ def load_config(config_path: Optional[Path]) -> PipelineConfig:
     with open(config_path, "r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     return PipelineConfig.from_dict(data)
-

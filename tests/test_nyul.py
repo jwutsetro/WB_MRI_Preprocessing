@@ -1,5 +1,6 @@
 import numpy as np
 import SimpleITK as sitk
+from pathlib import Path
 
 from Preprocessing.config import NyulConfig
 from Preprocessing.nyul import NyulModel, fit_nyul_model
@@ -12,7 +13,7 @@ def _synthetic_image(value: float) -> sitk.Image:
 
 
 def test_nyul_fit_and_apply():
-    cfg = NyulConfig(bins=10, landmarks=4, upper_outlier=99.0, remove_bg_below=0.0, model_dir=None, modalities=["T1"])
+    cfg = NyulConfig(bins=10, landmarks=4, upper_outlier=99.0, remove_bg_below=0.0, model_dir=Path("models"), modalities=["T1"])
     images = [_synthetic_image(10.0), _synthetic_image(20.0)]
     model = fit_nyul_model("T1", images, cfg)
     assert model.landmarks, "Landmarks should be computed"
@@ -21,4 +22,3 @@ def test_nyul_fit_and_apply():
     arr = sitk.GetArrayFromImage(transformed)
     assert arr.shape == target_image.GetSize()[::-1]
     assert np.any(arr), "Output should not be empty"
-

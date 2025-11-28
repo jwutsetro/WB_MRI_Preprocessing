@@ -39,6 +39,8 @@ sequences:
       - 3D_T1_TSE
       - T1
     output_modality: T1
+    canonical_modality: T1
+    is_anatomical: true
     expect_stations: true
     target_orientation: LPS
   - name: dixon_in_phase
@@ -48,6 +50,8 @@ sequences:
     include_types:
       - IP
     output_modality: DixonIP
+    canonical_modality: T1
+    is_anatomical: true
     expect_stations: true
   - name: dixon_out_phase
     description_contains:
@@ -56,17 +60,19 @@ sequences:
     include_types:
       - OP
     output_modality: DixonOP
+    canonical_modality: T1
     expect_stations: true
   - name: t2_dixon
     description_contains:
       - T2
     output_modality: T2
+    canonical_modality: T2
     expect_stations: true
   - name: dwi
     description_contains:
       - DWIBS
       - DWI
     output_modality: DWI
+    canonical_modality: DWI
     b_value_tag: 0018|9087
     expect_stations: true
-

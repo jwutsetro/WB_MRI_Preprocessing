@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -20,6 +21,7 @@ class DicomInstance:
     station_name: Optional[str]
     type_value: Optional[str]
     b_value: Optional[str]
+    metadata: Dict[str, str] = field(default_factory=dict)
 
 
 class SequenceDetector:
@@ -70,9 +72,11 @@ class DicomSorter:
             station_name = reader.GetMetaData("0008|1010") if reader.HasMetaDataKey("0008|1010") else None
             type_value = None
             b_value = None
+            extra_meta: Dict[str, str] = {}
             for key in ["2005|1011", "0018|9087"]:
                 if reader.HasMetaDataKey(key):
                     value = reader.GetMetaData(key)
+                    extra_meta[key] = value
                     if key == "2005|1011":
                         type_value = value
                     if key == "0018|9087":
@@ -87,6 +91,7 @@ class DicomSorter:
                     station_name=station_name,
                     type_value=type_value,
                     b_value=b_value,
+                    metadata=extra_meta,
                 )
             )
         return instances
@@ -140,47 +145,122 @@ class DicomSorter:
             grouped.setdefault(key, []).append(instance)
         return grouped
 
+    def _orient_image(self, image: sitk.Image, target_orientation: str) -> sitk.Image:
+        try:
+            return sitk.DICOMOrient(image, target_orientation)
+        except Exception:
+            return image
+
     def _write_series(
         self,
         rule: SequenceRule,
-        series_uid: str,
         b_value: Optional[str],
         instances: Sequence[DicomInstance],
         patient_output: Path,
         station_idx: int,
-    ) -> Path:
-        reader = sitk.ImageSeriesReader()
-        sorted_files = [str(inst.filepath) for inst in sorted(instances, key=lambda x: x.instance_number)]
-        reader.SetFileNames(sorted_files)
-        image = reader.Execute()
-        if rule.target_orientation:
-            try:
-                image = sitk.DICOMOrient(image, rule.target_orientation)
-            except Exception:
-                pass
-        patient_output.mkdir(parents=True, exist_ok=True)
-        station_label = self._station_label(station_idx)
-        suffix = f"_b{b_value}" if b_value else ""
-        filename = f"{rule.output_modality}_{station_label}{suffix}.nii.gz"
-        output_path = patient_output / filename
+        image: Optional[sitk.Image] = None,
+    ) -> Tuple[Path, sitk.Image]:
+        if image is None:
+            reader = sitk.ImageSeriesReader()
+            sorted_files = [str(inst.filepath) for inst in sorted(instances, key=lambda x: x.instance_number)]
+            reader.SetFileNames(sorted_files)
+            image = reader.Execute()
+            image = self._orient_image(image, self.cfg.target_orientation)
+        modality_dir = patient_output / (rule.canonical_modality or rule.output_modality) / f"{station_idx:02d}"
+        modality_dir.mkdir(parents=True, exist_ok=True)
+        if b_value:
+            filename = f"b{b_value}.nii.gz"
+        else:
+            filename = f"{rule.name}.nii.gz"
+        output_path = modality_dir / filename
         sitk.WriteImage(image, str(output_path), True)
-        return output_path
-
-    def _station_label(self, idx: int) -> str:
-        labels = self.cfg.station_labels
-        if idx < len(labels):
-            return f"{idx+1:02d}_{labels[idx]}"
-        return f"{idx+1:02d}"
+        return output_path, image
 
     def sort_and_convert(self, patient_dir: Path, output_dir: Path) -> List[Path]:
-        """Return list of written NIfTI files."""
+        """Return list of written NIfTI files; also writes patient metadata JSON."""
         instances = self._collect_instances(patient_dir)
         grouped = self._group_instances(instances)
         written: List[Path] = []
-        for station_idx, ((rule_name, series_uid, b_value), items) in enumerate(sorted(grouped.items(), key=lambda x: x[0][1])):
+        modality_entries: Dict[str, List[Dict]] = {}
+
+        # First pass: read and orient to gather origins for ordering
+        temp_entries = []
+        for (rule_name, series_uid, b_value), items in grouped.items():
             rule = next(r for r in self.cfg.sequence_rules if r.name == rule_name)
-            modality_dir = output_dir / rule.output_modality
-            written_path = self._write_series(rule, series_uid, b_value, items, modality_dir, station_idx)
-            written.append(written_path)
+            reader = sitk.ImageSeriesReader()
+            sorted_files = [str(inst.filepath) for inst in sorted(items, key=lambda x: x.instance_number)]
+            reader.SetFileNames(sorted_files)
+            image = self._orient_image(reader.Execute(), self.cfg.target_orientation)
+            origin = image.GetOrigin()
+            temp_entries.append(
+                {
+                    "rule": rule,
+                    "series_uid": series_uid,
+                    "b_value": b_value,
+                    "instances": items,
+                    "origin": origin,
+                    "image": image,
+                }
+            )
+
+        # Station ordering per canonical modality by origin z
+        by_modality: Dict[str, List[Dict]] = {}
+        for entry in temp_entries:
+            canonical = entry["rule"].canonical_modality or entry["rule"].output_modality
+            by_modality.setdefault(canonical, []).append(entry)
+        for canonical, entries in by_modality.items():
+            entries.sort(key=lambda e: e["origin"][2])
+            for idx, entry in enumerate(entries, start=1):
+                rule: SequenceRule = entry["rule"]
+                written_path, image = self._write_series(
+                    rule=rule,
+                    b_value=entry["b_value"],
+                    instances=entry["instances"],
+                    patient_output=output_dir,
+                    station_idx=idx,
+                    image=entry["image"],
+                )
+                written.append(written_path)
+                modality_entries.setdefault(canonical, []).append(
+                    {
+                        "rule": rule.name,
+                        "canonical_modality": canonical,
+                        "series_uid": entry["series_uid"],
+                        "b_value": entry["b_value"],
+                        "station_index": idx,
+                        "file": str(written_path.relative_to(output_dir)),
+                        "series_description": entry["instances"][0].series_description,
+                        "protocol_name": entry["instances"][0].protocol_name,
+                        "spacing": image.GetSpacing(),
+                        "size": image.GetSize(),
+                        "origin": image.GetOrigin(),
+                        "direction": image.GetDirection(),
+                    }
+                )
+
+        self._write_metadata(output_dir, patient_dir.name, modality_entries)
         return written
 
+    def _write_metadata(self, patient_output: Path, patient_id: str, modality_entries: Dict[str, List[Dict]]) -> None:
+        meta_path = patient_output / "metadata.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        anatomical_modalities = {
+            entry["canonical_modality"]
+            for entries in modality_entries.values()
+            for entry in entries
+            if any(r.name == entry["rule"] and r.is_anatomical for r in self.cfg.sequence_rules)
+        }
+        summary = {
+            "patient_id": patient_id,
+            "target_orientation": self.cfg.target_orientation,
+            "anatomical_modalities": sorted(anatomical_modalities),
+            "modalities": {
+                modality: {
+                    "stations": len(entries),
+                    "b_values": sorted({e["b_value"] for e in entries if e["b_value"] is not None}),
+                    "files": entries,
+                }
+                for modality, entries in modality_entries.items()
+            },
+        }
+        meta_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
