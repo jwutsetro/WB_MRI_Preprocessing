@@ -23,6 +23,10 @@ def _linear_fit_adc(b_values: List[float], log_signals: np.ndarray) -> np.ndarra
     return adc.astype(np.float32)
 
 
+BACKGROUND_INTENSITY_THRESHOLD = 0.005  # in original signal units
+ADC_SCALE = 1000.0  # scale factor to report in mm^2/s * 1e-3
+
+
 def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk.Image:
     """Compute ADC image from list of images and their corresponding b-values."""
     if len(b_images) != len(b_values):
@@ -43,6 +47,10 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
         arrays.append(np.log(arr))
     log_stack = np.stack(arrays, axis=0)
     adc_array = _linear_fit_adc(use_b, log_stack)
+    # suppress background where mean signal is low
+    mean_signal = np.mean(np.exp(log_stack), axis=0)
+    adc_array = np.where(mean_signal >= BACKGROUND_INTENSITY_THRESHOLD, adc_array, 0.0)
+    adc_array = adc_array * ADC_SCALE
     adc_image = sitk.GetImageFromArray(adc_array)
     adc_image.CopyInformation(imgs_sorted[0])
     return adc_image
@@ -75,4 +83,3 @@ def compute_adc_for_patient(patient_dir: Path) -> Path | None:
         sitk.WriteImage(adc_image, str(out_path), True)
         last_written = out_path
     return last_written
-

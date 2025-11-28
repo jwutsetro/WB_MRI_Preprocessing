@@ -48,5 +48,6 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 - Known sequence names are defined in `dicom_config.json` (e.g., T1, DWI, Dixon_IP/OP/W/F). Update this file to add new sequences.
 - New/renamed sequences are logged; run with `--interactive` to map them on the fly.
 - All outputs are oriented to `LPS` by default; change `target_orientation` in the config if required.
+- ADC computation fits log(S) vs b across all b-values (preferring >0), masks low-signal background (<0.005), and scales by 1000.
 - Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists.
 - Tests use synthetic data only: `pytest`.
