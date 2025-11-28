@@ -264,6 +264,7 @@ class DicomSorter:
                 )
 
         self._write_metadata(output_dir, patient_dir.name, modality_entries)
+        self._apply_dwi_background_mask(output_dir)
         self._report_unused(patient_dir, used_dicoms, all_dicoms)
         return written
 
@@ -297,3 +298,59 @@ class DicomSorter:
             print(f"[WARN] Unused DICOMs for patient {patient_dir.name}: {len(unused)} files")
         else:
             print(f"[OK] All DICOMs converted for patient {patient_dir.name}")
+
+    def _apply_dwi_background_mask(self, output_dir: Path) -> None:
+        """Use b1000 as a mask for all DWI b-values to align backgrounds."""
+        dwi_rules = [r for r in self.cfg.sequence_rules if (r.canonical_modality or r.output_modality).lower() == "dwi"]
+        threshold = dwi_rules[0].background_threshold if dwi_rules and dwi_rules[0].background_threshold is not None else 20.0
+        b_dirs = [p for p in output_dir.iterdir() if p.is_dir() and _is_float(p.name)]
+        if not b_dirs:
+            return
+        b1000_dirs = [d for d in b_dirs if _is_b1000(d.name)]
+        if not b1000_dirs:
+            return
+        b1000_dir = b1000_dirs[0]
+        other_dirs = [d for d in b_dirs if d != b1000_dir]
+        for b1000_file in sorted(b1000_dir.glob("*.nii*")):
+            station = b1000_file.stem
+            try:
+                b1000_img = sitk.ReadImage(str(b1000_file))
+                b1000_arr = sitk.GetArrayFromImage(b1000_img).astype(np.float32)
+            except Exception:
+                continue
+            mask = (b1000_arr >= threshold).astype(np.float32)
+            masked_b1000 = b1000_arr * mask
+            out_b1000 = sitk.GetImageFromArray(masked_b1000)
+            out_b1000.CopyInformation(b1000_img)
+            sitk.WriteImage(out_b1000, str(b1000_file), True)
+            for b_dir in other_dirs:
+                target = b_dir / f"{station}.nii.gz"
+                if not target.exists():
+                    continue
+                try:
+                    img = sitk.ReadImage(str(target))
+                    arr = sitk.GetArrayFromImage(img).astype(np.float32)
+                    if arr.shape != mask.shape:
+                        continue
+                    masked = arr * mask
+                    out_img = sitk.GetImageFromArray(masked)
+                    out_img.CopyInformation(img)
+                    sitk.WriteImage(out_img, str(target), True)
+                except Exception:
+                    continue
+
+
+def _is_float(val: str) -> bool:
+    try:
+        float(val)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_b1000(val: str) -> bool:
+    try:
+        b = float(val)
+        return abs(b - 1000.0) < 1e-3
+    except ValueError:
+        return False
