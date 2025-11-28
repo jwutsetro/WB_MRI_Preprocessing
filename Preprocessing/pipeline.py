@@ -12,6 +12,7 @@ from Preprocessing.adc import compute_adc_for_patient
 from Preprocessing.dicom_sort import DicomSorter
 from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
+from Preprocessing.isis import standardize_patient
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
@@ -77,20 +78,7 @@ class PipelineRunner:
         run_noise_bias(patient_output)
 
     def _run_isis(self, patient_output: Path) -> None:
-        for modality_dir in patient_output.iterdir():
-            if not modality_dir.is_dir():
-                continue
-            files = sorted(modality_dir.glob("*.nii*"))
-            if len(files) <= 1:
-                continue
-            images = [sitk.ReadImage(str(f)) for f in files]
-            means = [np.mean(sitk.GetArrayFromImage(im)[sitk.GetArrayFromImage(im) > 5]) for im in images]
-            target_mean = float(np.median(means))
-            for path, img, mean_val in zip(files, images, means):
-                scale = target_mean / max(mean_val, 1e-6)
-                scaled = sitk.Cast(img, sitk.sitkFloat32) * scale
-                scaled.CopyInformation(img)
-                sitk.WriteImage(scaled, str(path), True)
+        standardize_patient(patient_output)
 
     def _run_registration(self, patient_output: Path) -> None:
         t1_dir = patient_output / "T1"

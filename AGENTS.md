@@ -7,6 +7,7 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 - `Preprocessing/config.py`: YAML-driven configuration (paths, steps, Nyul settings) plus loader for JSON DICOM rules.
 - `Preprocessing/dicom_sort.py`: Maps DICOM series to modalities using `SequenceRule`, logs unknown sequences, writes station NIfTI files.
 - `Preprocessing/noise_bias.py`: Anisotropic diffusion + N4 bias correction utilities.
+- `Preprocessing/isis.py`: Inter-station intensity standardisation (center-out linear scaling).
 - `Preprocessing/pipeline.py`: Orchestrates steps, supports SLURM array sharding.
 - `Preprocessing/nyul.py`: Lightweight Nyul model fit/apply with JSON persistence.
 - `Preprocessing/cli.py`: Entry-point (`python -m Preprocessing.cli run ...`).
