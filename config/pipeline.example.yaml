@@ -1,0 +1,72 @@
+input_dir: /path/to/raw_dicoms
+output_dir: /path/to/processed
+working_dir: work
+target_orientation: LPS
+station_labels:
+  - head
+  - torso
+  - pelvis
+  - legs
+  - lower_legs
+  - upper_feet
+  - feet
+
+steps:
+  dicom_sort: true
+  adc: true
+  noise_bias: true
+  isis: true
+  registration: true
+  reconstruct: true
+  resample_to_t1: true
+  nyul: true
+
+nyul:
+  enable: true
+  bins: 120
+  landmarks: 6
+  upper_outlier: 99.5
+  remove_bg_below: 5.0
+  model_dir: models
+  modalities:
+    - T1
+    - ADC
+  refresh: false
+
+sequences:
+  - name: t1
+    description_contains:
+      - 3D_T1_TSE
+      - T1
+    output_modality: T1
+    expect_stations: true
+    target_orientation: LPS
+  - name: dixon_in_phase
+    description_contains:
+      - mDIXON
+    type_tag: 2005|1011
+    include_types:
+      - IP
+    output_modality: DixonIP
+    expect_stations: true
+  - name: dixon_out_phase
+    description_contains:
+      - mDIXON
+    type_tag: 2005|1011
+    include_types:
+      - OP
+    output_modality: DixonOP
+    expect_stations: true
+  - name: t2_dixon
+    description_contains:
+      - T2
+    output_modality: T2
+    expect_stations: true
+  - name: dwi
+    description_contains:
+      - DWIBS
+      - DWI
+    output_modality: DWI
+    b_value_tag: 0018|9087
+    expect_stations: true
+
