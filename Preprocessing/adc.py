@@ -23,8 +23,9 @@ def _linear_fit_adc(b_values: List[float], log_signals: np.ndarray) -> np.ndarra
     return adc.astype(np.float32)
 
 
-BACKGROUND_INTENSITY_THRESHOLD = 0.005  # in original signal units
+BACKGROUND_INTENSITY_THRESHOLD = 0.01  # suppress low-signal voxels
 ADC_SCALE = 1000.0  # scale factor to report in mm^2/s * 1e-3
+ADC_MAX = 5.0  # clamp to discard noise-driven outliers
 
 
 def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk.Image:
@@ -51,6 +52,7 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
     mean_signal = np.mean(np.exp(log_stack), axis=0)
     adc_array = np.where(mean_signal >= BACKGROUND_INTENSITY_THRESHOLD, adc_array, 0.0)
     adc_array = adc_array * ADC_SCALE
+    adc_array = np.clip(adc_array, 0.0, ADC_MAX)
     adc_image = sitk.GetImageFromArray(adc_array)
     adc_image.CopyInformation(imgs_sorted[0])
     return adc_image
