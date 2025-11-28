@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import SimpleITK as sitk
+import numpy as np
+
 
 from Preprocessing.config import PipelineConfig, SequenceRule
 
