@@ -34,6 +34,19 @@ def _overlap_indices(fixed: sitk.Image, moving: sitk.Image) -> Optional[Tuple[Tu
     return (idx_start_f, idx_end_f), (idx_start_m, idx_end_m)
 
 
+def _center_of_overlap(image: sitk.Image, idx: Tuple[int, int]) -> Tuple[float, float, float]:
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+    size = image.GetSize()
+    start, end = idx
+    z_center_index = 0.5 * (start + end)
+    return (
+        origin[0] + 0.5 * size[0] * spacing[0],
+        origin[1] + 0.5 * size[1] * spacing[1],
+        origin[2] + z_center_index * spacing[2],
+    )
+
+
 def _mask_from_indices(image: sitk.Image, idx: Tuple[int, int]) -> sitk.Image:
     mask = sitk.Image(image.GetSize(), sitk.sitkUInt8)
     mask.CopyInformation(image)
@@ -53,12 +66,15 @@ def _translation_registration(
     scales: Tuple[float, float, float] = (1.0, 1.0, 1000.0),
     shrink_factors: Tuple[int, int, int] = (4, 2, 1),
     smoothing_sigmas: Tuple[int, int, int] = (2, 1, 0),
+    initial_offset: Optional[Tuple[float, float, float]] = None,
 ) -> sitk.Transform:
     tx = sitk.TranslationTransform(3)
+    if initial_offset is not None:
+        tx.SetOffset(initial_offset)
     R = sitk.ImageRegistrationMethod()
     R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
     R.SetMetricSamplingStrategy(R.RANDOM)
-    R.SetMetricSamplingPercentage(0.2)
+    R.SetMetricSamplingPercentage(0.5)
     if mask is not None:
         R.SetMetricFixedMask(mask)
     R.SetInterpolator(sitk.sitkLinear)
@@ -112,7 +128,12 @@ def register_patient(patient_dir: Path) -> None:
         moving_image = adc_images[f.stem]
         overlap = _overlap_indices(ref_image, moving_image)
         mask = _mask_from_indices(ref_image, overlap[0]) if overlap else None
-        transform = _translation_registration(ref_image, moving_image, mask)
+        init_offset = None
+        if overlap:
+            center_fixed = _center_of_overlap(ref_image, overlap[0])
+            center_moving = _center_of_overlap(moving_image, overlap[1])
+            init_offset = tuple(cf - cm for cf, cm in zip(center_fixed, center_moving))
+        transform = _translation_registration(ref_image, moving_image, mask, initial_offset=init_offset)
         moved_adc = _apply_transform(moving_image, ref_image, transform)
         sitk.WriteImage(moved_adc, str(f), True)
         _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
@@ -124,7 +145,12 @@ def register_patient(patient_dir: Path) -> None:
         moving_image = adc_images[f.stem]
         overlap = _overlap_indices(ref_image, moving_image)
         mask = _mask_from_indices(ref_image, overlap[0]) if overlap else None
-        transform = _translation_registration(ref_image, moving_image, mask)
+        init_offset = None
+        if overlap:
+            center_fixed = _center_of_overlap(ref_image, overlap[0])
+            center_moving = _center_of_overlap(moving_image, overlap[1])
+            init_offset = tuple(cf - cm for cf, cm in zip(center_fixed, center_moving))
+        transform = _translation_registration(ref_image, moving_image, mask, initial_offset=init_offset)
         moved_adc = _apply_transform(moving_image, ref_image, transform)
         sitk.WriteImage(moved_adc, str(f), True)
         _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
