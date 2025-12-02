@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+import numpy as np
 import SimpleITK as sitk
 
 
@@ -123,44 +124,47 @@ def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]
     size_f = fixed.GetSize()
     size_m = moving.GetSize()
 
-    def extent(origin: Tuple[float, float, float], spacing: Tuple[float, float, float], size: Tuple[int, int, int]) -> Tuple[float, float, float]:
-        return (
-            origin[0] + size[0] * spacing[0],
-            origin[1] + size[1] * spacing[1],
-            origin[2] + size[2] * spacing[2],
-        )
+    idx_f: list[tuple[int, int]] = []
+    idx_m: list[tuple[int, int]] = []
+    for axis in range(3):
+        start = max(origin_f[axis], origin_m[axis])
+        end = min(origin_f[axis] + size_f[axis] * spacing_f[axis], origin_m[axis] + size_m[axis] * spacing_m[axis])
+        if end <= start:
+            return None
+        start_f = int(math.floor((start - origin_f[axis]) / spacing_f[axis]))
+        end_f = int(math.ceil((end - origin_f[axis]) / spacing_f[axis]))
+        start_m = int(math.floor((start - origin_m[axis]) / spacing_m[axis]))
+        end_m = int(math.ceil((end - origin_m[axis]) / spacing_m[axis]))
+        end_f = min(end_f, size_f[axis])
+        end_m = min(end_m, size_m[axis])
+        len_f = max(0, end_f - start_f)
+        len_m = max(0, end_m - start_m)
+        common = min(len_f, len_m)
+        if common <= 0:
+            return None
+        idx_f.append((start_f, start_f + common))
+        idx_m.append((start_m, start_m + common))
 
-    ext_f = extent(origin_f, spacing_f, size_f)
-    ext_m = extent(origin_m, spacing_m, size_m)
+    mask_arr = np.zeros(sitk.GetArrayFromImage(fixed).shape, dtype=np.uint8)
+    fixed_arr = sitk.GetArrayFromImage(fixed)
+    moving_arr = sitk.GetArrayFromImage(moving)
 
-    overlap_min = (
-        max(origin_f[0], origin_m[0]),
-        max(origin_f[1], origin_m[1]),
-        max(origin_f[2], origin_m[2]),
-    )
-    overlap_max = (
-        min(ext_f[0], ext_m[0]),
-        min(ext_f[1], ext_m[1]),
-        min(ext_f[2], ext_m[2]),
-    )
-    if overlap_max[0] <= overlap_min[0] or overlap_max[1] <= overlap_min[1] or overlap_max[2] <= overlap_min[2]:
+    (xf0, xf1), (yf0, yf1), (zf0, zf1) = idx_f
+    (xm0, xm1), (ym0, ym1), (zm0, zm1) = idx_m
+    f_overlap = fixed_arr[zf0:zf1, yf0:yf1, xf0:xf1]
+    m_overlap = moving_arr[zm0:zm1, ym0:ym1, xm0:xm1]
+
+    shared = (f_overlap > 0) & (m_overlap > 0)
+    if not shared.any():
         return None
 
-    start_idx = [
-        max(0, int(math.floor((overlap_min[i] - origin_f[i]) / spacing_f[i])))
-        for i in range(3)
-    ]
-    end_idx = [
-        min(size_f[i], int(math.ceil((overlap_max[i] - origin_f[i]) / spacing_f[i])))
-        for i in range(3)
-    ]
-    size_idx = [max(1, end_idx[i] - start_idx[i]) for i in range(3)]
-
-    mask = sitk.Image(size_f, sitk.sitkUInt8)
+    mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = shared.astype(np.uint8)
+    mask = sitk.GetImageFromArray(mask_arr)
     mask.CopyInformation(fixed)
-    ones = sitk.Image(size_idx, sitk.sitkUInt8)
-    ones = ones + 1
-    return sitk.Paste(mask, ones, ones.GetSize(), destinationIndex=start_idx)
+    mask.SetSpacing(spacing_f)
+    mask.SetOrigin(origin_f)
+    mask.SetDirection(fixed.GetDirection())
+    return mask
 
 
 def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameterMap) -> sitk.Image:
