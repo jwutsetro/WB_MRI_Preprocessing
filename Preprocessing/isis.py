@@ -10,14 +10,12 @@ import SimpleITK as sitk
 
 @dataclass
 class Overlap:
-    start: float
-    end: float
-    idx_a: Tuple[int, int]
-    idx_b: Tuple[int, int]
+    idx_a: Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]  # (x, y, z)
+    idx_b: Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
 
 
 def _compute_overlap(a: sitk.Image, b: sitk.Image) -> Optional[Overlap]:
-    """Compute physical overlap along z-axis assuming aligned orientation."""
+    """Compute 3D overlap between two aligned images and return index ranges per axis (x, y, z)."""
     spacing_a = a.GetSpacing()
     spacing_b = b.GetSpacing()
     origin_a = a.GetOrigin()
@@ -25,38 +23,48 @@ def _compute_overlap(a: sitk.Image, b: sitk.Image) -> Optional[Overlap]:
     size_a = a.GetSize()
     size_b = b.GetSize()
 
-    start_a = origin_a[2]
-    end_a = origin_a[2] + size_a[2] * spacing_a[2]
-    start_b = origin_b[2]
-    end_b = origin_b[2] + size_b[2] * spacing_b[2]
+    idx_a: List[Tuple[int, int]] = []
+    idx_b: List[Tuple[int, int]] = []
 
-    overlap_start = max(start_a, start_b)
-    overlap_end = min(end_a, end_b)
-    if overlap_end <= overlap_start:
-        return None
+    for axis in range(3):
+        start = max(origin_a[axis], origin_b[axis])
+        end = min(origin_a[axis] + size_a[axis] * spacing_a[axis], origin_b[axis] + size_b[axis] * spacing_b[axis])
+        if end <= start:
+            return None
+        start_idx_a = int(np.floor((start - origin_a[axis]) / spacing_a[axis]))
+        end_idx_a = int(np.ceil((end - origin_a[axis]) / spacing_a[axis]))
+        start_idx_b = int(np.floor((start - origin_b[axis]) / spacing_b[axis]))
+        end_idx_b = int(np.ceil((end - origin_b[axis]) / spacing_b[axis]))
 
-    idx_start_a = int(round((overlap_start - start_a) / spacing_a[2]))
-    idx_end_a = idx_start_a + int(round((overlap_end - overlap_start) / spacing_a[2]))
-    idx_start_b = int(round((overlap_start - start_b) / spacing_b[2]))
-    idx_end_b = idx_start_b + int(round((overlap_end - overlap_start) / spacing_b[2]))
+        end_idx_a = min(end_idx_a, size_a[axis])
+        end_idx_b = min(end_idx_b, size_b[axis])
 
-    idx_end_a = min(idx_end_a, size_a[2])
-    idx_end_b = min(idx_end_b, size_b[2])
+        len_a = max(0, end_idx_a - start_idx_a)
+        len_b = max(0, end_idx_b - start_idx_b)
+        common = min(len_a, len_b)
+        if common == 0:
+            return None
 
-    return Overlap(
-        start=overlap_start,
-        end=overlap_end,
-        idx_a=(idx_start_a, idx_end_a),
-        idx_b=(idx_start_b, idx_end_b),
-    )
+        idx_a.append((start_idx_a, start_idx_a + common))
+        idx_b.append((start_idx_b, start_idx_b + common))
+
+    return Overlap(idx_a=tuple(idx_a), idx_b=tuple(idx_b))
 
 
 def _scale_to_match(reference: sitk.Image, target: sitk.Image) -> sitk.Image:
     overlap = _compute_overlap(reference, target)
     if overlap is None:
         return target
-    ref_arr = sitk.GetArrayFromImage(reference)[overlap.idx_a[0] : overlap.idx_a[1], ...]
-    tar_arr = sitk.GetArrayFromImage(target)[overlap.idx_b[0] : overlap.idx_b[1], ...]
+    ref_np = sitk.GetArrayFromImage(reference)
+    tar_np = sitk.GetArrayFromImage(target)
+
+    # numpy arrays are ordered (z, y, x) while indices are stored (x, y, z)
+    x_a, y_a, z_a = overlap.idx_a
+    x_b, y_b, z_b = overlap.idx_b
+
+    ref_arr = ref_np[z_a[0] : z_a[1], y_a[0] : y_a[1], x_a[0] : x_a[1]]
+    tar_arr = tar_np[z_b[0] : z_b[1], y_b[0] : y_b[1], x_b[0] : x_b[1]]
+
     shared_mask = (ref_arr > 0) & (tar_arr > 0)
     ref_vals = ref_arr[shared_mask]
     tar_vals = tar_arr[shared_mask]
