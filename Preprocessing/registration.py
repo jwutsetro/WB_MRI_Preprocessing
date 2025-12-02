@@ -71,7 +71,7 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
             fixed=fixed_img,
             moving=moving_img,
             mask=mask,
-            parameter_files=("Euler_S2S_MSD.txt",),
+            parameter_files=("Euler_S2S_MSD.txt", "Euler_S2S_MI.txt"),
         )
         result_adc = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_adc, str(station["path"]), True)
