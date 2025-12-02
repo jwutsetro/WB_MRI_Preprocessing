@@ -13,6 +13,28 @@ from Preprocessing.config import PipelineConfig, SequenceRule
 from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
 
+def _crop_zero_padding_z(image: sitk.Image, threshold: float = 0.0) -> sitk.Image:
+    """Trim leading/trailing slices along z that are all below threshold, preserving spatial info."""
+    arr = sitk.GetArrayFromImage(image)  # z, y, x
+    non_zero = np.abs(arr) > threshold
+    z_any = non_zero.any(axis=(1, 2))
+    if not z_any.any():
+        return image
+    z_idx = np.where(z_any)[0]
+    z_start, z_end = int(z_idx[0]), int(z_idx[-1] + 1)
+    if z_start == 0 and z_end == arr.shape[0]:
+        return image
+    cropped_arr = arr[z_start:z_end, :, :]
+    cropped = sitk.GetImageFromArray(cropped_arr)
+    cropped = sitk.Cast(cropped, image.GetPixelID())
+    cropped.SetSpacing(image.GetSpacing())
+    cropped.SetDirection(image.GetDirection())
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+    cropped.SetOrigin((origin[0], origin[1], origin[2] + z_start * spacing[2]))
+    return cropped
+
+
 @dataclass
 class DicomInstance:
     filepath: Path
@@ -210,6 +232,7 @@ class DicomSorter:
             sorted_files = [str(inst.filepath) for inst in sorted(items, key=lambda x: x.instance_number)]
             reader.SetFileNames(sorted_files)
             image = self._orient_image(reader.Execute(), self.cfg.target_orientation)
+            image = _crop_zero_padding_z(image)
             origin = image.GetOrigin()
             temp_entries.append(
                 {
