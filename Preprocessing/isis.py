@@ -51,6 +51,29 @@ def _compute_overlap(a: sitk.Image, b: sitk.Image) -> Optional[Overlap]:
     return Overlap(idx_a=tuple(idx_a), idx_b=tuple(idx_b))
 
 
+def _crop_zero_padding_z(image: sitk.Image, threshold: float = 0.0) -> sitk.Image:
+    """Remove leading/trailing all-zero slices along z while preserving spacing/direction."""
+    arr = sitk.GetArrayFromImage(image)  # z, y, x
+    non_zero = np.abs(arr) > threshold
+    z_any = non_zero.any(axis=(1, 2))
+    if not z_any.any():
+        return image
+    z_indices = np.where(z_any)[0]
+    z_start, z_end = int(z_indices[0]), int(z_indices[-1] + 1)
+    if z_start == 0 and z_end == arr.shape[0]:
+        return image
+
+    cropped_arr = arr[z_start:z_end, :, :]
+    cropped = sitk.GetImageFromArray(cropped_arr)
+    cropped = sitk.Cast(cropped, image.GetPixelID())
+    cropped.SetSpacing(image.GetSpacing())
+    cropped.SetDirection(image.GetDirection())
+    origin = image.GetOrigin()
+    spacing = image.GetSpacing()
+    cropped.SetOrigin((origin[0], origin[1], origin[2] + z_start * spacing[2]))
+    return cropped
+
+
 def _scale_to_match(reference: sitk.Image, target: sitk.Image) -> sitk.Image:
     overlap = _compute_overlap(reference, target)
     if overlap is None:
@@ -84,7 +107,7 @@ def _standardize_modality(mod_dir: Path) -> None:
     files = sorted(mod_dir.glob("*.nii*"), key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
     if len(files) <= 1:
         return
-    images = [sitk.ReadImage(str(f)) for f in files]
+    images = [_crop_zero_padding_z(sitk.ReadImage(str(f))) for f in files]
     center_idx = len(images) // 2
 
     # propagate upwards (higher indices)
