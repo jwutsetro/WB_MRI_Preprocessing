@@ -102,15 +102,19 @@ def _run_elastix(
     moving_origin: Optional[Tuple[float, float, float]] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
-    elastix.LogToConsoleOff()
+    elastix.LogToConsoleOn()
     elastix.SetFixedImage(fixed)
     elastix.SetMovingImage(moving)
-    if mask is not None:
-        elastix.SetFixedMask(mask)
     params = sitk.VectorOfParameterMap()
     for filename in parameter_files:
         params.append(_load_parameter_map(filename))
     elastix.SetParameterMap(params)
+    # Some parameter sets (RandomSparseMask) require a mask; supply a full-ones mask if none provided.
+    needs_mask = any(p.get("ImageSampler", [""])[0] == "RandomSparseMask" for p in params)
+    if mask is None and needs_mask:
+        mask = _ones_mask_like(fixed)
+    if mask is not None:
+        elastix.SetFixedMask(mask)
     elastix.Execute()
     result = elastix.GetTransformParameterMap()
     for param_map in result:
@@ -169,6 +173,13 @@ def _extract_overlap_images(
     roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=(xf0, yf0, zf0))
     roi_m = sitk.RegionOfInterest(moving, size=size_m, index=(xm0, ym0, zm0))
     return roi_f, roi_m
+
+
+def _ones_mask_like(image: sitk.Image) -> sitk.Image:
+    mask = sitk.Image(image.GetSize(), sitk.sitkUInt8)
+    mask = mask + 1
+    mask.CopyInformation(image)
+    return mask
 
 
 def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameterMap) -> sitk.Image:
