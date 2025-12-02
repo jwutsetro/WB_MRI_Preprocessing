@@ -215,6 +215,14 @@ class DicomSorter:
         sitk.WriteImage(image, str(output_path), True)
         return output_path, image
 
+    def _mask_image_with_body(self, image: sitk.Image, existing_mask: Optional[sitk.Image] = None) -> Tuple[sitk.Image, sitk.Image]:
+        """Apply a robust body mask to a DWI image, returning the masked image and mask."""
+        mask = existing_mask or compute_body_mask(image, smoothing_sigma=1.2, closing_radius=2, dilation_radius=1)
+        masked = sitk.Mask(image, mask, outsideValue=0)
+        masked.CopyInformation(image)
+        mask.CopyInformation(image)
+        return masked, mask
+
     def sort_and_convert(self, patient_dir: Path, output_dir: Path) -> List[Path]:
         """Return list of written NIfTI files; also writes patient metadata JSON."""
         instances = self._collect_instances(patient_dir)
@@ -296,17 +304,27 @@ class DicomSorter:
                 series_origins.setdefault(entry["series_uid"], entry["origin"][2])
             for idx, (series_uid, _) in enumerate(sorted(series_origins.items(), key=lambda kv: kv[1]), start=1):
                 series_order[series_uid] = idx
+
+            dwi_mask_cache: Dict[str, sitk.Image] = {}
+
             for entry in entries:
                 rule: SequenceRule = entry["rule"]
                 station_idx = series_order.get(entry["series_uid"], 0)
                 target_modality = "T1" if entry["rule"].is_anatomical else canonical
+                image_to_write = entry["image"]
+                if canonical.lower() == "dwi":
+                    cached_mask = dwi_mask_cache.get(entry["series_uid"])
+                    image_to_write, cached_mask = self._mask_image_with_body(
+                        image_to_write, existing_mask=cached_mask
+                    )
+                    dwi_mask_cache[entry["series_uid"]] = cached_mask
                 written_path, image = self._write_series(
                     rule=rule,
                     b_value=entry["b_value"],
                     instances=entry["instances"],
                     patient_output=output_dir,
                     station_idx=station_idx,
-                    image=entry["image"],
+                    image=image_to_write,
                 )
                 written.append(written_path)
                 used_dicoms.update(inst.filepath for inst in entry["instances"])
@@ -367,7 +385,6 @@ class DicomSorter:
 
     def _apply_dwi_background_mask(self, output_dir: Path) -> None:
         """Use b1000-derived body mask for all DWI b-values to align backgrounds."""
-        dwi_rules = [r for r in self.cfg.sequence_rules if (r.canonical_modality or r.output_modality).lower() == "dwi"]
         b_dirs = [p for p in output_dir.iterdir() if p.is_dir() and _is_float(p.name)]
         if not b_dirs:
             return
@@ -380,15 +397,11 @@ class DicomSorter:
             station = b1000_file.stem
             try:
                 b1000_img = sitk.ReadImage(str(b1000_file))
-                b1000_arr = sitk.GetArrayFromImage(b1000_img).astype(np.float32)
             except Exception:
                 continue
-            mask_img = compute_body_mask(b1000_img, smoothing_sigma=1.0, closing_radius=1, dilation_radius=1)
-            mask = sitk.GetArrayFromImage(mask_img).astype(np.float32)
-            masked_b1000 = b1000_arr * mask
-            out_b1000 = sitk.GetImageFromArray(masked_b1000)
-            out_b1000.CopyInformation(b1000_img)
-            sitk.WriteImage(out_b1000, str(b1000_file), True)
+            mask_img = compute_body_mask(b1000_img, smoothing_sigma=1.2, closing_radius=2, dilation_radius=1)
+            masked_b1000, mask_img = self._mask_image_with_body(b1000_img, existing_mask=mask_img)
+            sitk.WriteImage(masked_b1000, str(b1000_file), True)
             for b_dir in other_dirs:
                 target = b_dir / f"{station}.nii.gz"
                 if not target.exists():
@@ -396,6 +409,7 @@ class DicomSorter:
                 try:
                     img = sitk.ReadImage(str(target))
                     arr = sitk.GetArrayFromImage(img).astype(np.float32)
+                    mask = sitk.GetArrayFromImage(mask_img).astype(np.float32)
                     if arr.shape != mask.shape:
                         continue
                     masked = arr * mask

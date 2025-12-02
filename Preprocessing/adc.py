@@ -20,21 +20,40 @@ def _largest_component(mask: sitk.Image) -> sitk.Image:
 def compute_body_mask(
     image: sitk.Image, smoothing_sigma: float = 1.0, closing_radius: int = 1, dilation_radius: int = 1
 ) -> sitk.Image:
-    """Estimate a body mask from a diffusion image using smoothed Otsu + largest component."""
+    """Estimate a robust body mask using central Otsu, cleanup, and fallbacks for noisy DWI volumes."""
     img_float = sitk.Cast(image, sitk.sitkFloat32)
     arr = sitk.GetArrayFromImage(img_float).astype(np.float32)
+    empty_mask = sitk.Image(img_float.GetSize(), sitk.sitkUInt8)
+    empty_mask.CopyInformation(img_float)
     if arr.size == 0:
-        mask = sitk.Image(img_float.GetSize(), sitk.sitkUInt8)
-        mask.CopyInformation(img_float)
-        return mask
+        return empty_mask
+
     positive = arr[arr > 0]
-    if positive.size:
-        cap = np.percentile(positive, 99.5)
-        arr = np.clip(arr, 0.0, cap)
-    capped = sitk.GetImageFromArray(arr)
-    capped.CopyInformation(img_float)
-    smoothed = sitk.DiscreteGaussian(capped, variance=smoothing_sigma**2)
-    mask = sitk.OtsuThreshold(smoothed, outsideValue=0, insideValue=1)
+    if positive.size == 0:
+        return empty_mask
+
+    cap = np.percentile(positive, 99.5)
+    arr = np.clip(arr, 0.0, cap)
+    clipped = sitk.GetImageFromArray(arr)
+    clipped.CopyInformation(img_float)
+
+    # Restrict Otsu threshold search to the central FOV to avoid air-dominated histograms.
+    z, y, x = arr.shape
+    margin_y = max(1, y // 8)
+    margin_x = max(1, x // 8)
+    y0, y1 = margin_y, max(margin_y + 1, y - margin_y)
+    x0, x1 = margin_x, max(margin_x + 1, x - margin_x)
+    center_mask_arr = np.zeros_like(arr, dtype=np.uint8)
+    center_mask_arr[:, y0:y1, x0:x1] = 1
+    center_mask = sitk.GetImageFromArray(center_mask_arr)
+    center_mask.CopyInformation(img_float)
+
+    smoothed = sitk.DiscreteGaussian(clipped, variance=smoothing_sigma**2)
+    otsu = sitk.OtsuThresholdImageFilter()
+    otsu.SetInsideValue(1)
+    otsu.SetOutsideValue(0)
+    otsu.SetMaskValue(1)
+    mask = otsu.Execute(smoothed, center_mask)
     if closing_radius > 0:
         mask = sitk.BinaryMorphologicalClosing(mask, [closing_radius] * 3)
     mask = sitk.BinaryFillhole(mask)
@@ -42,6 +61,21 @@ def compute_body_mask(
     if dilation_radius > 0:
         mask = sitk.BinaryDilate(mask, [dilation_radius] * 3)
     mask.CopyInformation(image)
+
+    # Fallback: if mask is too permissive or too sparse, use a percentile-based threshold.
+    coverage = float(np.mean(sitk.GetArrayFromImage(mask)))
+    if coverage > 0.8 or coverage < 0.005:
+        fallback_thresh = np.percentile(positive, 15.0)
+        fallback_arr = (arr >= fallback_thresh).astype(np.uint8)
+        fallback = sitk.GetImageFromArray(fallback_arr)
+        fallback.CopyInformation(image)
+        fallback = sitk.BinaryFillhole(fallback)
+        fallback = _largest_component(fallback)
+        if dilation_radius > 0:
+            fallback = sitk.BinaryDilate(fallback, [dilation_radius] * 3)
+        fallback.CopyInformation(image)
+        mask = fallback
+
     return mask
 
 
