@@ -87,6 +87,7 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
             mask=None,
             parameter_files=param_files,
             moving_origin=moving_img.GetOrigin(),
+            output_reference=moving_img,
         )
         result_adc = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_adc, str(station["path"]), True)
@@ -100,6 +101,7 @@ def _run_elastix(
     mask: Optional[sitk.Image],
     parameter_files: Sequence[str],
     moving_origin: Optional[Tuple[float, float, float]] = None,
+    output_reference: Optional[sitk.Image] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
     elastix.LogToConsoleOn()
@@ -121,9 +123,10 @@ def _run_elastix(
         elastix.SetFixedMask(mask)
     elastix.Execute()
     result = elastix.GetTransformParameterMap()
+    reference = output_reference if output_reference is not None else moving
     for param_map in result:
-        origin = moving_origin if moving_origin is not None else moving.GetOrigin()
-        param_map["Origin"] = [str(val) for val in origin]
+        origin = moving_origin if moving_origin is not None else reference.GetOrigin()
+        _set_output_geometry(param_map, reference, origin_override=origin)
     return result
 
 
@@ -177,6 +180,19 @@ def _extract_overlap_images(
     roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=(xf0, yf0, zf0))
     roi_m = sitk.RegionOfInterest(moving, size=size_m, index=(xm0, ym0, zm0))
     return roi_f, roi_m
+
+
+def _set_output_geometry(
+    param_map: sitk.ParameterMap, reference: sitk.Image, origin_override: Optional[Tuple[float, float, float]] = None
+) -> None:
+    size = reference.GetSize()
+    spacing = reference.GetSpacing()
+    origin = origin_override if origin_override is not None else reference.GetOrigin()
+    direction = reference.GetDirection()
+    param_map["Size"] = [str(v) for v in size]
+    param_map["Spacing"] = [str(v) for v in spacing]
+    param_map["Origin"] = [str(v) for v in origin]
+    param_map["Direction"] = [str(v) for v in direction]
 
 
 def _ones_mask_like(image: sitk.Image) -> sitk.Image:
