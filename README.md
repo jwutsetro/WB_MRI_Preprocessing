@@ -54,6 +54,10 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
     ```bash
     python merge_WB.py /path/to/output_root
     ```
+11. Register WB ADC/dwi to T1 only:
+    ```bash
+    python register_wb.py /path/to/output_root
+    ```
 
 ### SimpleElastix (registration)
 - Recommended: install the PyPI build that bundles Elastix/SimpleITK: `pip install SimpleITK-SimpleElastix`.
