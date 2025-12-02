@@ -117,6 +117,8 @@ def _run_elastix(
 
 
 def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]:
+    MIN_SHARED_VOXELS = 500  # fallback to full overlap mask if shared signal is too sparse for sampling
+
     spacing_f = fixed.GetSpacing()
     spacing_m = moving.GetSpacing()
     origin_f = fixed.GetOrigin()
@@ -155,10 +157,12 @@ def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]
     m_overlap = moving_arr[zm0:zm1, ym0:ym1, xm0:xm1]
 
     shared = (f_overlap > 0) & (m_overlap > 0)
-    if not shared.any():
-        return None
+    if shared.sum() < MIN_SHARED_VOXELS:
+        # If the true shared signal is too small for elastix sampling, allow the whole physical overlap.
+        mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = 1
+    else:
+        mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = shared.astype(np.uint8)
 
-    mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = shared.astype(np.uint8)
     mask = sitk.GetImageFromArray(mask_arr)
     mask.CopyInformation(fixed)
     mask.SetSpacing(spacing_f)
