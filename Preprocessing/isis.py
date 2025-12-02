@@ -57,8 +57,9 @@ def _scale_to_match(reference: sitk.Image, target: sitk.Image) -> sitk.Image:
         return target
     ref_arr = sitk.GetArrayFromImage(reference)[overlap.idx_a[0] : overlap.idx_a[1], ...]
     tar_arr = sitk.GetArrayFromImage(target)[overlap.idx_b[0] : overlap.idx_b[1], ...]
-    ref_vals = ref_arr[ref_arr > 0]
-    tar_vals = tar_arr[tar_arr > 0]
+    shared_mask = (ref_arr > 0) & (tar_arr > 0)
+    ref_vals = ref_arr[shared_mask]
+    tar_vals = tar_arr[shared_mask]
     if ref_vals.size == 0 or tar_vals.size == 0:
         return target
     mean_ref = float(ref_vals.mean())
@@ -106,4 +107,3 @@ def standardize_root(root_dir: Path, skip_modalities: Iterable[str] = ("ADC",)) 
     for patient in patients:
         print(f"[ISIS] Processing {patient.name}")
         standardize_patient(patient, skip_modalities=skip_modalities)
-

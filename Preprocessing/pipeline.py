@@ -64,10 +64,10 @@ class PipelineRunner:
             self._run_adc(patient_output)
         if self.cfg.steps.noise_bias:
             self._run_bias(patient_output)
-        if self.cfg.steps.isis:
-            self._run_isis(patient_output)
         if self.cfg.steps.registration:
             self._run_registration(patient_output)
+        if self.cfg.steps.isis:
+            self._run_isis(patient_output)
         if self.cfg.steps.reconstruct:
             self._run_reconstruct(patient_output)
         if self.cfg.steps.resample_to_t1:
