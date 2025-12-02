@@ -51,7 +51,7 @@
 // ** Sampler Parameters
 // *****************
 
-(ImageSampler "RandomCoordinate")
+(ImageSampler "RandomSparseMask")
 (NumberOfSpatialSamples 2048)
 (CheckNumberOfSamples "true")
 (NewSamplesEveryIteration "true")
@@ -61,6 +61,7 @@
 (FinalBSplineInterpolationOrder 3)
 (RequiredRatioOfValidSamples 0.1)
 (UseFastAndLowMemoryVersion "true")
+(WriteResultImageAfterEachResolution "true")
 
 // *****************
 // ** Output Settings

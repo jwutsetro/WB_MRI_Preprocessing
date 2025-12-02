@@ -61,6 +61,7 @@
 (FinalBSplineInterpolationOrder 3)
 (RequiredRatioOfValidSamples 0.1)
 (UseFastAndLowMemoryVersion "true")
+(WriteResultImageAfterEachResolution "true")
 
 // *****************
 // ** Output Settings
