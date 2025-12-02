@@ -110,7 +110,11 @@ def _run_elastix(
         params.append(_load_parameter_map(filename))
     elastix.SetParameterMap(params)
     # Some parameter sets (RandomSparseMask) require a mask; supply a full-ones mask if none provided.
-    needs_mask = any(p.get("ImageSampler", [""])[0] == "RandomSparseMask" for p in params)
+    def _sampler_name(param_map: sitk.ParameterMap) -> str:
+        raw = param_map["ImageSampler"][0] if "ImageSampler" in param_map else ""
+        return raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+    needs_mask = any(_sampler_name(p) == "RandomSparseMask" for p in params)
     if mask is None and needs_mask:
         mask = _ones_mask_like(fixed)
     if mask is not None:
