@@ -54,7 +54,7 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
     ```bash
     python merge_WB.py /path/to/output_root
     ```
-11. Register WB ADC/dwi to T1 only:
+11. Register whole-body diffusion (ADC/DWI) to anatomical only:
     ```bash
     python register_wb.py /path/to/output_root
     ```
@@ -77,14 +77,14 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
   (The default PyPI `SimpleITK` wheel lacks SimpleElastix.)
 
 ## Notes
-- Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). After ADC, only the highest b-value folder is kept and renamed to `dwi/`. Whole-body merges write `T1.nii.gz` (first anatomical found), `ADC.nii.gz`, and `dwi.nii.gz` with feathered overlaps and remove per-station folders. DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`, including available and selected b-values.
+- Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). Whole-body merges write a single `<modality>.nii.gz` with feathered overlaps and remove per-station folders. DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
 - Known sequence names are defined in `dicom_config.json` (e.g., T1, DWI, Dixon_IP/OP/W/F). Update this file to add new sequences.
 - New/renamed sequences are logged; run with `--interactive` to map them on the fly.
 - All outputs are oriented to `LPS` by default; change `target_orientation` in the config if required.
 - ADC computation fits log(S) vs b across all b-values (preferring >0), masks low-signal background (<0.01), zeros pure noise (>5.0), and scales by 1000.
 - ISIS scales stations linearly from the center outward so overlap regions share the same mean intensity (per modality; ADC is skipped).
-- Inter-station registration uses ADC station overlaps with SimpleElastix parameter maps (`Preprocessing/parameter_files`) and applies transforms to all DWI stations from the center outward (head pair uses AP-focused parameters).
+- Inter-station registration uses ADC station overlaps with SimpleElastix parameter maps (`Preprocessing/parameter_files`) and applies transforms to all DWI stations from the center outward.
 - Station merges use feathered linear blending across overlaps to avoid seams between stations; station folders are cleaned up post-merge.
-- Whole-body registration aligns `ADC.nii.gz` to `T1.nii.gz` and applies the transform to `dwi.nii.gz`.
+- Whole-body DWI-to-anatomical registration uses the same Elastix parameter maps (Euler + B-spline) and updates all DWI WB volumes to the anatomical WB space.
 - Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists.
 - Tests use synthetic data only: `pytest`.
