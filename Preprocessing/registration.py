@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import SimpleITK as sitk
 
 
@@ -71,10 +70,11 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
     fixed_img = stations[0]["image"]
     for idx, station in enumerate(stations[1:], start=1):
         moving_img = station["image"]
-        mask = _overlap_mask(fixed_img, moving_img)
-        if mask is None:
+        overlap = _compute_overlap_indices(fixed_img, moving_img)
+        if overlap is None:
             fixed_img = moving_img
             continue
+        fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
         is_top_pair = idx == len(stations) - 1
         param_files = (
             ("Euler_S2S_MSD_head.txt", "Euler_S2S_MI_head.txt")
@@ -82,10 +82,11 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
             else ("Euler_S2S_MSD.txt", "Euler_S2S_MI.txt")
         )
         param_maps = _run_elastix(
-            fixed=fixed_img,
-            moving=moving_img,
-            mask=mask,
+            fixed=fixed_roi,
+            moving=moving_roi,
+            mask=None,
             parameter_files=param_files,
+            moving_origin=moving_img.GetOrigin(),
         )
         result_adc = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_adc, str(station["path"]), True)
@@ -98,6 +99,7 @@ def _run_elastix(
     moving: sitk.Image,
     mask: Optional[sitk.Image],
     parameter_files: Sequence[str],
+    moving_origin: Optional[Tuple[float, float, float]] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
     elastix.LogToConsoleOff()
@@ -112,13 +114,16 @@ def _run_elastix(
     elastix.Execute()
     result = elastix.GetTransformParameterMap()
     for param_map in result:
-        param_map["Origin"] = [str(val) for val in moving.GetOrigin()]
+        origin = moving_origin if moving_origin is not None else moving.GetOrigin()
+        param_map["Origin"] = [str(val) for val in origin]
     return result
 
 
-def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]:
-    MIN_SHARED_VOXELS = 500  # fallback to full overlap mask if shared signal is too sparse for sampling
-
+def _compute_overlap_indices(
+    fixed: sitk.Image, moving: sitk.Image
+) -> Optional[
+    Tuple[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]], Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]]
+]:
     spacing_f = fixed.GetSpacing()
     spacing_m = moving.GetSpacing()
     origin_f = fixed.GetOrigin()
@@ -147,28 +152,23 @@ def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]
         idx_f.append((start_f, start_f + common))
         idx_m.append((start_m, start_m + common))
 
-    mask_arr = np.zeros(sitk.GetArrayFromImage(fixed).shape, dtype=np.uint8)
-    fixed_arr = sitk.GetArrayFromImage(fixed)
-    moving_arr = sitk.GetArrayFromImage(moving)
+    return (tuple(idx_f), tuple(idx_m))  # type: ignore[return-value]
 
+
+def _extract_overlap_images(
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    indices: Tuple[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]], Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]],
+) -> Tuple[sitk.Image, sitk.Image]:
+    idx_f, idx_m = indices
     (xf0, xf1), (yf0, yf1), (zf0, zf1) = idx_f
     (xm0, xm1), (ym0, ym1), (zm0, zm1) = idx_m
-    f_overlap = fixed_arr[zf0:zf1, yf0:yf1, xf0:xf1]
-    m_overlap = moving_arr[zm0:zm1, ym0:ym1, xm0:xm1]
+    size_f = (xf1 - xf0, yf1 - yf0, zf1 - zf0)
+    size_m = (xm1 - xm0, ym1 - ym0, zm1 - zm0)
 
-    shared = (f_overlap > 0) & (m_overlap > 0)
-    if shared.sum() < MIN_SHARED_VOXELS:
-        # If the true shared signal is too small for elastix sampling, allow the whole physical overlap.
-        mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = 1
-    else:
-        mask_arr[zf0:zf1, yf0:yf1, xf0:xf1] = shared.astype(np.uint8)
-
-    mask = sitk.GetImageFromArray(mask_arr)
-    mask.CopyInformation(fixed)
-    mask.SetSpacing(spacing_f)
-    mask.SetOrigin(origin_f)
-    mask.SetDirection(fixed.GetDirection())
-    return mask
+    roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=(xf0, yf0, zf0))
+    roi_m = sitk.RegionOfInterest(moving, size=size_m, index=(xm0, ym0, zm0))
+    return roi_f, roi_m
 
 
 def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameterMap) -> sitk.Image:
