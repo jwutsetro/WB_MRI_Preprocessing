@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import SimpleITK as sitk
+from Preprocessing.utils import prune_dwi_directories
 
 
 def _linear_fit_adc(b_values: List[float], log_signals: np.ndarray) -> np.ndarray:
@@ -84,4 +85,5 @@ def compute_adc_for_patient(patient_dir: Path) -> Path | None:
         out_path = adc_dir / f"{station}.nii.gz"
         sitk.WriteImage(adc_image, str(out_path), True)
         last_written = out_path
+    prune_dwi_directories(patient_dir)
     return last_written

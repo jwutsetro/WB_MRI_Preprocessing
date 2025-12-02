@@ -166,7 +166,7 @@ def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameter
 
 
 def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps: sitk.VectorOfParameterMap) -> None:
-    for modality_dir in _dwi_dirs(patient_dir):
+    for modality_dir in _bvalue_dirs(patient_dir):
         target = modality_dir / f"{station_name}.nii.gz"
         if not target.exists():
             continue
@@ -235,12 +235,9 @@ def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
     return targets
 
 
-def _dwi_dirs(patient_dir: Path) -> List[Path]:
-    dirs = []
-    dwi_dir = patient_dir / "dwi"
-    if dwi_dir.is_dir():
-        dirs.append(dwi_dir)
-    dirs.extend([p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)])
+def _bvalue_dirs(patient_dir: Path) -> List[Path]:
+    dirs = [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)]
+    dirs.sort(key=lambda p: float(p.name))
     return dirs
 
 

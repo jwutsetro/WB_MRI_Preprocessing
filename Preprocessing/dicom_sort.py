@@ -10,6 +10,7 @@ import numpy as np
 
 
 from Preprocessing.config import PipelineConfig, SequenceRule
+from Preprocessing.utils import prune_anatomical_modalities
 
 
 @dataclass
@@ -265,6 +266,7 @@ class DicomSorter:
 
         self._write_metadata(output_dir, patient_dir.name, modality_entries)
         self._apply_dwi_background_mask(output_dir)
+        prune_anatomical_modalities(output_dir)
         self._report_unused(patient_dir, used_dicoms, all_dicoms)
         return written
 
