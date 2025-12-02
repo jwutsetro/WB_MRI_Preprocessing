@@ -1,12 +1,108 @@
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence
 
 import SimpleITK as sitk
 
 
-def _overlap_indices(fixed: sitk.Image, moving: sitk.Image) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
+PARAMETER_DIR = Path(__file__).resolve().parent / "parameter_files"
+
+
+def register_patient(patient_dir: Path) -> None:
+    """Run station-to-station registration (ADC-driven) and apply transforms to all DWI stations."""
+    adc_dir = patient_dir / "ADC"
+    if not adc_dir.exists():
+        return
+    stations = _load_adc_stations(adc_dir)
+    if len(stations) <= 1:
+        return
+    center_idx = (len(stations) - 1) // 2
+    _register_chain(stations[center_idx:], patient_dir)
+    _register_chain(list(reversed(stations[: center_idx + 1])), patient_dir)
+
+
+def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
+    """Register whole-body DWI (ADC or highest b-value) to anatomical WB and apply the transform to all DWI WB volumes."""
+    fixed_path = _choose_anatomical_wb(patient_dir)
+    moving_path = _choose_dwi_wb(patient_dir)
+    if fixed_path is None or moving_path is None:
+        return
+    fixed = sitk.ReadImage(str(fixed_path))
+    moving = sitk.ReadImage(str(moving_path))
+    param_maps = _run_elastix(
+        fixed=fixed,
+        moving=moving,
+        mask=None,
+        parameter_files=("S2A_Pair_Euler_WB.txt", "S2A_Pair_BSpline_WB.txt"),
+    )
+    for target in _wb_dwi_targets(patient_dir):
+        img = sitk.ReadImage(str(target))
+        result = _apply_transformix(img, param_maps)
+        sitk.WriteImage(result, str(target), True)
+
+
+def _load_adc_stations(adc_dir: Path) -> List[Dict]:
+    stations: List[Dict] = []
+    for path in sorted(adc_dir.glob("*.nii*")):
+        try:
+            img = sitk.ReadImage(str(path))
+        except Exception:
+            continue
+        origin_z = img.GetOrigin()[2]
+        stations.append({"path": path, "image": img, "origin_z": origin_z})
+    stations.sort(key=lambda s: (s["origin_z"], s["path"].stem))
+    return stations
+
+
+def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
+    if len(stations) < 2:
+        return
+    fixed_img = stations[0]["image"]
+    for station in stations[1:]:
+        moving_img = station["image"]
+        mask = _overlap_mask(fixed_img, moving_img)
+        if mask is None:
+            fixed_img = moving_img
+            continue
+        param_maps = _run_elastix(
+            fixed=fixed_img,
+            moving=moving_img,
+            mask=mask,
+            parameter_files=("Euler_S2S_MSD.txt",),
+        )
+        result_adc = _apply_transformix(moving_img, param_maps)
+        sitk.WriteImage(result_adc, str(station["path"]), True)
+        _apply_transform_to_dwi(patient_dir, station["path"].stem, param_maps)
+        fixed_img = result_adc
+
+
+def _run_elastix(
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    mask: Optional[sitk.Image],
+    parameter_files: Sequence[str],
+) -> sitk.VectorOfParameterMap:
+    elastix = sitk.ElastixImageFilter()
+    elastix.LogToConsoleOff()
+    elastix.SetFixedImage(fixed)
+    elastix.SetMovingImage(moving)
+    if mask is not None:
+        elastix.SetFixedMask(mask)
+    params = sitk.VectorOfParameterMap()
+    for filename in parameter_files:
+        params.append(_load_parameter_map(filename))
+    elastix.SetParameterMap(params)
+    elastix.Execute()
+    result = elastix.GetTransformParameterMap()
+    for param_map in result:
+        param_map["Origin"] = [str(val) for val in moving.GetOrigin()]
+    return result
+
+
+def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]:
     spacing_f = fixed.GetSpacing()
     spacing_m = moving.GetSpacing()
     origin_f = fixed.GetOrigin()
@@ -18,179 +114,133 @@ def _overlap_indices(fixed: sitk.Image, moving: sitk.Image) -> Optional[Tuple[Tu
     end_f = origin_f[2] + size_f[2] * spacing_f[2]
     start_m = origin_m[2]
     end_m = origin_m[2] + size_m[2] * spacing_m[2]
-
     overlap_start = max(start_f, start_m)
     overlap_end = min(end_f, end_m)
     if overlap_end <= overlap_start:
         return None
-
-    idx_start_f = int(round((overlap_start - start_f) / spacing_f[2]))
-    idx_end_f = idx_start_f + int(round((overlap_end - overlap_start) / spacing_f[2]))
-    idx_start_m = int(round((overlap_start - start_m) / spacing_m[2]))
-    idx_end_m = idx_start_m + int(round((overlap_end - overlap_start) / spacing_m[2]))
-
-    idx_end_f = min(idx_end_f, size_f[2])
-    idx_end_m = min(idx_end_m, size_m[2])
-    return (idx_start_f, idx_end_f), (idx_start_m, idx_end_m)
-
-
-def _center_of_overlap(image: sitk.Image, idx: Tuple[int, int]) -> Tuple[float, float, float]:
-    origin = image.GetOrigin()
-    spacing = image.GetSpacing()
-    size = image.GetSize()
-    start, end = idx
-    z_center_index = 0.5 * (start + end)
-    return (
-        origin[0] + 0.5 * size[0] * spacing[0],
-        origin[1] + 0.5 * size[1] * spacing[1],
-        origin[2] + z_center_index * spacing[2],
-    )
-
-
-def _mask_from_indices(image: sitk.Image, idx: Tuple[int, int]) -> sitk.Image:
-    mask = sitk.Image(image.GetSize(), sitk.sitkUInt8)
-    mask.CopyInformation(image)
-    start, end = idx
-    region = [0, 0, start]
-    size = [image.GetSize()[0], image.GetSize()[1], max(1, end - start)]
-    ones = sitk.Image(size, sitk.sitkUInt8)
+    start_idx = max(0, int(math.floor((overlap_start - start_f) / spacing_f[2])))
+    end_idx = min(size_f[2], int(math.ceil((overlap_end - start_f) / spacing_f[2])))
+    if end_idx <= start_idx:
+        end_idx = min(size_f[2], start_idx + 1)
+    if end_idx <= start_idx:
+        return None
+    mask = sitk.Image(size_f, sitk.sitkUInt8)
+    mask.CopyInformation(fixed)
+    depth = max(1, end_idx - start_idx)
+    ones = sitk.Image([size_f[0], size_f[1], depth], sitk.sitkUInt8)
     ones = ones + 1
-    mask = sitk.Paste(mask, ones, ones.GetSize(), destinationIndex=region)
-    return mask
+    return sitk.Paste(mask, ones, ones.GetSize(), destinationIndex=[0, 0, start_idx])
 
 
-def _translation_registration(
-    fixed: sitk.Image,
-    moving: sitk.Image,
-    mask: Optional[sitk.Image] = None,
-    scales: Tuple[float, float, float] = (1.0, 1.0, 1000.0),
-    shrink_factors: Tuple[int, int, int] = (4, 2, 1),
-    smoothing_sigmas: Tuple[int, int, int] = (2, 1, 0),
-    initial_offset: Optional[Tuple[float, float, float]] = None,
-) -> sitk.Transform:
-    tx = sitk.TranslationTransform(3)
-    if initial_offset is not None:
-        tx.SetOffset(initial_offset)
-    R = sitk.ImageRegistrationMethod()
-    R.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
-    # use all samples in the small overlap region
-    R.SetMetricSamplingStrategy(R.NONE)
-    if mask is not None:
-        R.SetMetricFixedMask(mask)
-    R.SetInterpolator(sitk.sitkLinear)
-    R.SetOptimizerAsRegularStepGradientDescent(
-        learningRate=2.0,
-        minStep=1e-4,
-        numberOfIterations=200,
-        relaxationFactor=0.5,
-    )
-    R.SetOptimizerScales(scales)
-    R.SetInitialTransform(tx, inPlace=False)
-    R.SetShrinkFactorsPerLevel(shrinkFactors=shrink_factors)
-    R.SetSmoothingSigmasPerLevel(smoothing_sigmas)
-    R.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
-    try:
-        return R.Execute(fixed, moving)
-    except RuntimeError:
-        return tx
+def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameterMap) -> sitk.Image:
+    transformix = sitk.TransformixImageFilter()
+    transformix.LogToConsoleOff()
+    transformix.SetTransformParameterMap(parameter_maps)
+    transformix.SetMovingImage(image)
+    transformix.Execute()
+    return transformix.GetResultImage()
 
 
-def _apply_transform(image: sitk.Image, reference: sitk.Image, transform: sitk.Transform) -> sitk.Image:
-    return sitk.Resample(
-        image,
-        reference,
-        transform,
-        sitk.sitkLinear,
-        0.0,
-        image.GetPixelID(),
-    )
-
-
-def _sorted_station_files(modality_dir: Path) -> List[Path]:
-    files = [p for p in modality_dir.glob("*.nii*") if p.is_file()]
-    files.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
-    return files
-
-
-def register_patient(patient_dir: Path) -> None:
-    """Inter-station registration using ADC overlaps; transforms applied to all b-values."""
-    adc_dir = patient_dir / "ADC"
-    if not adc_dir.exists():
-        return
-    adc_files = _sorted_station_files(adc_dir)
-    if len(adc_files) <= 1:
-        return
-    adc_images: Dict[str, sitk.Image] = {f.stem: sitk.ReadImage(str(f)) for f in adc_files}
-    stations = list(adc_files)
-    center_idx = len(stations) // 2
-    reference_station = stations[center_idx].stem
-
-    # propagate upward
-    ref_image = adc_images[reference_station]
-    for f in stations[center_idx + 1 :]:
-        moving_image = adc_images[f.stem]
-        overlap = _overlap_indices(ref_image, moving_image)
-        if overlap is None:
-            continue
-        fixed_crop, moving_crop = _crop_to_overlap(ref_image, moving_image, overlap)
-        mask = _mask_from_indices(fixed_crop, (0, fixed_crop.GetSize()[2]))
-        init_offset = None
-        center_fixed = _center_of_overlap(ref_image, overlap[0])
-        center_moving = _center_of_overlap(moving_image, overlap[1])
-        init_offset = tuple(cf - cm for cf, cm in zip(center_fixed, center_moving))
-        transform = _translation_registration(fixed_crop, moving_crop, mask, initial_offset=init_offset)
-        moved_adc = _apply_transform(moving_image, ref_image, transform)
-        sitk.WriteImage(moved_adc, str(f), True)
-        _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
-        ref_image = moved_adc
-
-    # propagate downward
-    ref_image = adc_images[reference_station]
-    for f in reversed(stations[:center_idx]):
-        moving_image = adc_images[f.stem]
-        overlap = _overlap_indices(ref_image, moving_image)
-        if overlap is None:
-            continue
-        fixed_crop, moving_crop = _crop_to_overlap(ref_image, moving_image, overlap)
-        mask = _mask_from_indices(fixed_crop, (0, fixed_crop.GetSize()[2]))
-        center_fixed = _center_of_overlap(ref_image, overlap[0])
-        center_moving = _center_of_overlap(moving_image, overlap[1])
-        init_offset = tuple(cf - cm for cf, cm in zip(center_fixed, center_moving))
-        transform = _translation_registration(fixed_crop, moving_crop, mask, initial_offset=init_offset)
-        moved_adc = _apply_transform(moving_image, ref_image, transform)
-        sitk.WriteImage(moved_adc, str(f), True)
-        _apply_transform_to_bvalues(patient_dir, f.stem, ref_image, transform)
-        ref_image = moved_adc
-
-
-def _apply_transform_to_bvalues(patient_dir: Path, station: str, reference: sitk.Image, transform: sitk.Transform) -> None:
-    for modality_dir in patient_dir.iterdir():
-        if not modality_dir.is_dir():
-            continue
-        if not modality_dir.name.isdigit():
-            continue
-        target = modality_dir / f"{station}.nii.gz"
+def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps: sitk.VectorOfParameterMap) -> None:
+    for modality_dir in _bvalue_dirs(patient_dir):
+        target = modality_dir / f"{station_name}.nii.gz"
         if not target.exists():
             continue
-        img = sitk.ReadImage(str(target))
-        moved = _apply_transform(img, reference, transform)
-        sitk.WriteImage(moved, str(target), True)
+        moving = sitk.ReadImage(str(target))
+        result = _apply_transformix(moving, parameter_maps)
+        sitk.WriteImage(result, str(target), True)
 
 
-def register_wholebody_adc_to_t1(patient_dir: Path) -> None:
-    t1_wb = patient_dir / "T1_WB.nii.gz"
-    adc_wb = patient_dir / "ADC_WB.nii.gz"
-    if not t1_wb.exists() or not adc_wb.exists():
-        return
-    fixed = sitk.ReadImage(str(t1_wb))
-    moving = sitk.ReadImage(str(adc_wb))
-    transform = _translation_registration(
-        fixed,
-        moving,
-        mask=None,
-        scales=(1.0, 1.0, 500.0),
-        shrink_factors=(4, 2, 1),
-        smoothing_sigmas=(2, 1, 0),
-    )
-    moved_adc = _apply_transform(moving, fixed, transform)
-    sitk.WriteImage(moved_adc, str(adc_wb), True)
+def _choose_anatomical_wb(patient_dir: Path) -> Optional[Path]:
+    metadata = _load_metadata(patient_dir)
+    candidates: List[Path] = []
+    if metadata:
+        for modality in metadata.get("anatomical_modalities", []):
+            candidate = patient_dir / f"{modality}_WB.nii.gz"
+            if candidate.exists():
+                candidates.append(candidate)
+    candidates.sort(key=lambda p: _anatomical_priority(_modality_from_wb(p)))
+    if candidates:
+        return candidates[0]
+    fallbacks = [p for p in patient_dir.glob("*_WB.nii.gz") if not _is_dwi_modality(_modality_from_wb(p))]
+    fallbacks.sort(key=lambda p: _anatomical_priority(_modality_from_wb(p)))
+    return fallbacks[0] if fallbacks else None
+
+
+def _choose_dwi_wb(patient_dir: Path) -> Optional[Path]:
+    targets = _wb_dwi_targets(patient_dir)
+    adc = [t for t in targets if _modality_from_wb(t).lower() == "adc"]
+    if adc:
+        return adc[0]
+    numeric: List[tuple[float, Path]] = []
+    for candidate in targets:
+        modality = _modality_from_wb(candidate)
+        try:
+            numeric.append((float(modality), candidate))
+        except ValueError:
+            continue
+    if numeric:
+        numeric.sort(key=lambda t: t[0], reverse=True)
+        return numeric[0][1]
+    return targets[0] if targets else None
+
+
+def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
+    targets = [
+        path
+        for path in patient_dir.glob("*_WB.nii.gz")
+        if _is_dwi_modality(_modality_from_wb(path))
+    ]
+    targets.sort(key=lambda p: _modality_from_wb(p))
+    return targets
+
+
+def _bvalue_dirs(patient_dir: Path) -> List[Path]:
+    dirs = [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)]
+    dirs.sort(key=lambda p: float(p.name))
+    return dirs
+
+
+def _load_parameter_map(filename: str) -> sitk.ParameterMap:
+    path = PARAMETER_DIR / filename
+    if not path.exists():
+        raise FileNotFoundError(f"Parameter file not found: {path}")
+    return sitk.ReadParameterFile(str(path))
+
+
+def _load_metadata(patient_dir: Path) -> Optional[Dict]:
+    meta_path = patient_dir / "metadata.json"
+    if not meta_path.exists():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _modality_from_wb(path: Path) -> str:
+    name = path.stem
+    return name[:-3] if name.endswith("_WB") else name
+
+
+def _anatomical_priority(modality: str) -> int:
+    name = modality.lower()
+    if name == "t1":
+        return 0
+    if "t2" in name:
+        return 1
+    if "dixon" in name:
+        return 2
+    return 3
+
+
+def _is_bvalue(name: str) -> bool:
+    try:
+        float(name)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_dwi_modality(name: str) -> bool:
+    return name.lower() == "adc" or _is_bvalue(name)

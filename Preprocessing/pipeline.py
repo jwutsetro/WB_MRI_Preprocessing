@@ -13,7 +13,7 @@ from Preprocessing.dicom_sort import DicomSorter
 from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 from Preprocessing.isis import standardize_patient
-from Preprocessing.registration import register_patient, register_wholebody_adc_to_t1
+from Preprocessing.registration import register_patient, register_wholebody_dwi_to_anatomical
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
@@ -112,7 +112,7 @@ class PipelineRunner:
             sitk.WriteImage(output, str(patient_output / f"{modality_dir.name}_WB.nii.gz"), True)
 
     def _run_resample_to_t1(self, patient_output: Path) -> None:
-        register_wholebody_adc_to_t1(patient_output)
+        register_wholebody_dwi_to_anatomical(patient_output)
 
     def _run_nyul(self, output_root: Path) -> None:
         model_dir = self.cfg.nyul.model_dir

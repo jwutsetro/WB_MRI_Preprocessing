@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run inter-station registration for all patients (ADC-driven, SimpleITK ImageRegistrationMethod).
+Run inter-station registration for all patients (ADC-driven, SimpleElastix parameter maps).
 Usage:
     python register_stations.py /path/to/output_root
 """
