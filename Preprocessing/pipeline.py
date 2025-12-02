@@ -96,7 +96,9 @@ class PipelineRunner:
         model_dir.mkdir(parents=True, exist_ok=True)
         for modality in self.cfg.nyul.modalities:
             images: List[sitk.Image] = []
-            modality_files = sorted(output_root.glob(f"*/*{modality}_WB.nii.gz"))
+            modality_files = sorted(output_root.glob(f"*/{modality}.nii.gz"))
+            if not modality_files:
+                modality_files = sorted(output_root.glob(f"*/*{modality}_WB.nii.gz"))
             for file in modality_files:
                 images.append(sitk.ReadImage(str(file)))
             if not images:

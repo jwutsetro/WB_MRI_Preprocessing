@@ -9,29 +9,19 @@ import SimpleITK as sitk
 
 
 def merge_patient(patient_dir: Path) -> None:
-    """Merge all station images for each modality into whole-body volumes with feathered overlaps."""
+    """Merge all station images for each modality into whole-body volumes with feathered overlaps, then remove station folders."""
     modality_dirs = [d for d in patient_dir.iterdir() if d.is_dir()]
     for modality_dir in modality_dirs:
         station_files = sorted(modality_dir.glob("*.nii*"))
         if not station_files:
-            continue
-        if len(station_files) == 1:
-            _write_single_station(patient_dir, modality_dir.name, station_files[0])
             continue
         stations = _load_stations(station_files)
         if not stations:
             continue
         reference = _reference_image(stations)
         merged = _feather_merge(stations, reference)
-        _write_outputs(patient_dir, modality_dir.name, merged)
-
-
-def _write_single_station(patient_dir: Path, modality: str, file: Path) -> None:
-    target_wb = patient_dir / f"{modality}_WB.nii.gz"
-    target_plain = patient_dir / f"{modality}.nii.gz"
-    img = sitk.ReadImage(str(file))
-    sitk.WriteImage(img, str(target_wb), True)
-    sitk.WriteImage(img, str(target_plain), True)
+        _write_output(patient_dir, modality_dir.name, merged)
+        _safe_remove_dir(modality_dir)
 
 
 def _load_stations(files: List[Path]) -> List[Dict]:
@@ -132,18 +122,18 @@ def _station_weight_image(
         overlap_end = min(origin[2] + size[2] * spacing[2], prev_extent[1])
         if overlap_end > overlap_start:
             length = overlap_end - overlap_start
-            ramp = (z_coords - overlap_start) / length
-            ramp = np.clip(ramp, 0.0, 1.0)
-            weights = np.where((z_coords >= overlap_start) & (z_coords <= overlap_end), ramp, weights)
+            ramp_up = (z_coords - overlap_start) / length  # 0 -> 1 through overlap
+            ramp_up = np.clip(ramp_up, 0.0, 1.0)
+            weights = np.where((z_coords >= overlap_start) & (z_coords <= overlap_end), ramp_up, weights)
 
     if next_extent is not None:
         overlap_start = max(origin[2], next_extent[0])
         overlap_end = min(origin[2] + size[2] * spacing[2], next_extent[1])
         if overlap_end > overlap_start:
             length = overlap_end - overlap_start
-            ramp = (overlap_end - z_coords) / length
-            ramp = np.clip(ramp, 0.0, 1.0)
-            weights = np.where((z_coords >= overlap_start) & (z_coords <= overlap_end), np.minimum(weights, ramp), weights)
+            ramp_down = (overlap_end - z_coords) / length  # 1 -> 0 through overlap
+            ramp_down = np.clip(ramp_down, 0.0, 1.0)
+            weights = np.where((z_coords >= overlap_start) & (z_coords <= overlap_end), np.minimum(weights, ramp_down), weights)
 
     arr = np.ones((size[2], size[1], size[0]), dtype=np.float32)
     arr *= weights[:, None, None]
@@ -155,7 +145,14 @@ def _station_weight_image(
 
 
 def _write_outputs(patient_dir: Path, modality: str, image: sitk.Image) -> None:
-    target_wb = patient_dir / f"{modality}_WB.nii.gz"
     target_plain = patient_dir / f"{modality}.nii.gz"
-    sitk.WriteImage(image, str(target_wb), True)
     sitk.WriteImage(image, str(target_plain), True)
+
+
+def _safe_remove_dir(path: Path) -> None:
+    try:
+        import shutil
+
+        shutil.rmtree(path)
+    except Exception:
+        pass
