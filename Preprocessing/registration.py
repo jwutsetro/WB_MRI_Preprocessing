@@ -67,11 +67,17 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
         if mask is None:
             fixed_img = moving_img
             continue
+        is_top_pair = idx == len(stations) - 1
+        param_files = (
+            ("Euler_S2S_MSD_head.txt", "Euler_S2S_MI_head.txt")
+            if is_top_pair
+            else ("Euler_S2S_MSD.txt", "Euler_S2S_MI.txt")
+        )
         param_maps = _run_elastix(
             fixed=fixed_img,
             moving=moving_img,
             mask=mask,
-            parameter_files=("Euler_S2S_MSD.txt", "Euler_S2S_MI.txt"),
+            parameter_files=param_files,
         )
         result_adc = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_adc, str(station["path"]), True)
@@ -110,26 +116,44 @@ def _overlap_mask(fixed: sitk.Image, moving: sitk.Image) -> Optional[sitk.Image]
     size_f = fixed.GetSize()
     size_m = moving.GetSize()
 
-    start_f = origin_f[2]
-    end_f = origin_f[2] + size_f[2] * spacing_f[2]
-    start_m = origin_m[2]
-    end_m = origin_m[2] + size_m[2] * spacing_m[2]
-    overlap_start = max(start_f, start_m)
-    overlap_end = min(end_f, end_m)
-    if overlap_end <= overlap_start:
+    def extent(origin: Tuple[float, float, float], spacing: Tuple[float, float, float], size: Tuple[int, int, int]) -> Tuple[float, float, float]:
+        return (
+            origin[0] + size[0] * spacing[0],
+            origin[1] + size[1] * spacing[1],
+            origin[2] + size[2] * spacing[2],
+        )
+
+    ext_f = extent(origin_f, spacing_f, size_f)
+    ext_m = extent(origin_m, spacing_m, size_m)
+
+    overlap_min = (
+        max(origin_f[0], origin_m[0]),
+        max(origin_f[1], origin_m[1]),
+        max(origin_f[2], origin_m[2]),
+    )
+    overlap_max = (
+        min(ext_f[0], ext_m[0]),
+        min(ext_f[1], ext_m[1]),
+        min(ext_f[2], ext_m[2]),
+    )
+    if overlap_max[0] <= overlap_min[0] or overlap_max[1] <= overlap_min[1] or overlap_max[2] <= overlap_min[2]:
         return None
-    start_idx = max(0, int(math.floor((overlap_start - start_f) / spacing_f[2])))
-    end_idx = min(size_f[2], int(math.ceil((overlap_end - start_f) / spacing_f[2])))
-    if end_idx <= start_idx:
-        end_idx = min(size_f[2], start_idx + 1)
-    if end_idx <= start_idx:
-        return None
+
+    start_idx = [
+        max(0, int(math.floor((overlap_min[i] - origin_f[i]) / spacing_f[i])))
+        for i in range(3)
+    ]
+    end_idx = [
+        min(size_f[i], int(math.ceil((overlap_max[i] - origin_f[i]) / spacing_f[i])))
+        for i in range(3)
+    ]
+    size_idx = [max(1, end_idx[i] - start_idx[i]) for i in range(3)]
+
     mask = sitk.Image(size_f, sitk.sitkUInt8)
     mask.CopyInformation(fixed)
-    depth = max(1, end_idx - start_idx)
-    ones = sitk.Image([size_f[0], size_f[1], depth], sitk.sitkUInt8)
+    ones = sitk.Image(size_idx, sitk.sitkUInt8)
     ones = ones + 1
-    return sitk.Paste(mask, ones, ones.GetSize(), destinationIndex=[0, 0, start_idx])
+    return sitk.Paste(mask, ones, ones.GetSize(), destinationIndex=start_idx)
 
 
 def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameterMap) -> sitk.Image:
