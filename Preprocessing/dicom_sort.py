@@ -9,6 +9,7 @@ import SimpleITK as sitk
 import numpy as np
 
 
+from Preprocessing.adc import compute_body_mask
 from Preprocessing.config import PipelineConfig, SequenceRule
 from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
@@ -365,9 +366,8 @@ class DicomSorter:
             print(f"[OK] All DICOMs converted for patient {patient_dir.name}")
 
     def _apply_dwi_background_mask(self, output_dir: Path) -> None:
-        """Use b1000 as a mask for all DWI b-values to align backgrounds."""
+        """Use b1000-derived body mask for all DWI b-values to align backgrounds."""
         dwi_rules = [r for r in self.cfg.sequence_rules if (r.canonical_modality or r.output_modality).lower() == "dwi"]
-        threshold = dwi_rules[0].background_threshold if dwi_rules and dwi_rules[0].background_threshold is not None else 20.0
         b_dirs = [p for p in output_dir.iterdir() if p.is_dir() and _is_float(p.name)]
         if not b_dirs:
             return
@@ -383,7 +383,8 @@ class DicomSorter:
                 b1000_arr = sitk.GetArrayFromImage(b1000_img).astype(np.float32)
             except Exception:
                 continue
-            mask = (b1000_arr >= threshold).astype(np.float32)
+            mask_img = compute_body_mask(b1000_img, smoothing_sigma=1.0, closing_radius=1, dilation_radius=1)
+            mask = sitk.GetArrayFromImage(mask_img).astype(np.float32)
             masked_b1000 = b1000_arr * mask
             out_b1000 = sitk.GetImageFromArray(masked_b1000)
             out_b1000.CopyInformation(b1000_img)

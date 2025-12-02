@@ -8,6 +8,43 @@ import SimpleITK as sitk
 from Preprocessing.utils import prune_dwi_directories
 
 
+def _largest_component(mask: sitk.Image) -> sitk.Image:
+    """Keep only the largest connected component of a binary mask."""
+    labeled = sitk.ConnectedComponent(mask)
+    relabeled = sitk.RelabelComponent(labeled, sortByObjectSize=True)
+    largest = sitk.BinaryThreshold(relabeled, lowerThreshold=1, upperThreshold=1, insideValue=1, outsideValue=0)
+    largest.CopyInformation(mask)
+    return largest
+
+
+def compute_body_mask(
+    image: sitk.Image, smoothing_sigma: float = 1.0, closing_radius: int = 1, dilation_radius: int = 1
+) -> sitk.Image:
+    """Estimate a body mask from a diffusion image using smoothed Otsu + largest component."""
+    img_float = sitk.Cast(image, sitk.sitkFloat32)
+    arr = sitk.GetArrayFromImage(img_float).astype(np.float32)
+    if arr.size == 0:
+        mask = sitk.Image(img_float.GetSize(), sitk.sitkUInt8)
+        mask.CopyInformation(img_float)
+        return mask
+    positive = arr[arr > 0]
+    if positive.size:
+        cap = np.percentile(positive, 99.5)
+        arr = np.clip(arr, 0.0, cap)
+    capped = sitk.GetImageFromArray(arr)
+    capped.CopyInformation(img_float)
+    smoothed = sitk.DiscreteGaussian(capped, variance=smoothing_sigma**2)
+    mask = sitk.OtsuThreshold(smoothed, outsideValue=0, insideValue=1)
+    if closing_radius > 0:
+        mask = sitk.BinaryMorphologicalClosing(mask, [closing_radius] * 3)
+    mask = sitk.BinaryFillhole(mask)
+    mask = _largest_component(mask)
+    if dilation_radius > 0:
+        mask = sitk.BinaryDilate(mask, [dilation_radius] * 3)
+    mask.CopyInformation(image)
+    return mask
+
+
 def _linear_fit_adc(b_values: List[float], log_signals: np.ndarray) -> np.ndarray:
     """Compute ADC via linear fit of log(S) vs b. Returns ADC array (mm^2/s scaled by 1e-3)."""
     b = np.asarray(b_values, dtype=np.float32)
@@ -42,9 +79,13 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
     else:
         use_pairs = pairs
     use_b = [b for b, _ in use_pairs]
+    reference_image = pairs[0][1]
+    mask_img = compute_body_mask(reference_image, smoothing_sigma=1.0, closing_radius=1, dilation_radius=1)
+    mask_arr = sitk.GetArrayFromImage(mask_img).astype(np.float32)
     arrays = []
     for _, im in use_pairs:
         arr = sitk.GetArrayFromImage(im).astype(np.float32)
+        arr = arr * mask_arr
         arr = np.maximum(arr, 1e-6)
         arrays.append(np.log(arr))
     log_stack = np.stack(arrays, axis=0)
@@ -54,6 +95,7 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
     adc_array = np.where(mean_signal >= BACKGROUND_INTENSITY_THRESHOLD, adc_array, 0.0)
     adc_array = adc_array * ADC_SCALE
     adc_array = np.where(adc_array > ADC_NOISE_THRESHOLD, 0.0, adc_array)
+    adc_array = adc_array * mask_arr
     adc_image = sitk.GetImageFromArray(adc_array)
     adc_image.CopyInformation(imgs_sorted[0])
     return adc_image
