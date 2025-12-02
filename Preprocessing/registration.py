@@ -25,11 +25,16 @@ def register_patient(patient_dir: Path) -> None:
 
 
 def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
-    """Register whole-body DWI (ADC or highest b-value) to anatomical WB and apply the transform to all DWI WB volumes."""
-    fixed_path = _choose_anatomical_wb(patient_dir)
-    moving_path = _choose_dwi_wb(patient_dir)
-    if fixed_path is None or moving_path is None:
-        return
+    """Register whole-body ADC to anatomical (T1) and apply the transform to DWI."""
+    fixed_path = patient_dir / "T1.nii.gz"
+    moving_path = patient_dir / "ADC.nii.gz"
+    dwi_path = patient_dir / "dwi.nii.gz"
+    if not fixed_path.exists() or not moving_path.exists():
+        fixed_path = _choose_anatomical_wb(patient_dir)
+        moving_path = _choose_dwi_wb(patient_dir)
+        dwi_path = moving_path if moving_path else dwi_path
+        if fixed_path is None or moving_path is None:
+            return
     fixed = sitk.ReadImage(str(fixed_path))
     moving = sitk.ReadImage(str(moving_path))
     param_maps = _run_elastix(
@@ -38,10 +43,12 @@ def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
         mask=None,
         parameter_files=("S2A_Pair_Euler_WB.txt", "S2A_Pair_BSpline_WB.txt"),
     )
-    for target in _wb_dwi_targets(patient_dir):
-        img = sitk.ReadImage(str(target))
-        result = _apply_transformix(img, param_maps)
-        sitk.WriteImage(result, str(target), True)
+    adc_reg = _apply_transformix(moving, param_maps)
+    sitk.WriteImage(adc_reg, str(moving_path), True)
+    if dwi_path.exists():
+        dwi_img = sitk.ReadImage(str(dwi_path))
+        dwi_reg = _apply_transformix(dwi_img, param_maps)
+        sitk.WriteImage(dwi_reg, str(dwi_path), True)
 
 
 def _load_adc_stations(adc_dir: Path) -> List[Dict]:
@@ -214,19 +221,30 @@ def _choose_dwi_wb(patient_dir: Path) -> Optional[Path]:
 
 
 def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
-    targets = []
+    targets: List[Path] = []
+    dwi_plain = patient_dir / "dwi.nii.gz"
+    if dwi_plain.exists():
+        targets.append(dwi_plain)
     metadata = _load_metadata(patient_dir)
-    modalities = set()
     if metadata:
-        modalities.update(metadata.get("modalities", {}).keys())
-        for entries in metadata.get("modalities", {}).values():
-            for entry in entries:
-                if entry.get("b_value") is not None:
-                    modalities.add(str(entry["b_value"]))
-    for modality in modalities:
-        for candidate in _candidate_paths(patient_dir, modality):
-            if candidate.exists() and _is_dwi_modality(modality):
-                targets.append(candidate)
+        modalities = metadata.get("modalities", {})
+        for modality, info in modalities.items():
+            files = []
+            if isinstance(info, dict) and "files" in info:
+                files = info["files"]
+            elif isinstance(info, list):
+                files = info
+            for entry in files:
+                if isinstance(entry, dict):
+                    modality_name = entry.get("canonical_modality") or modality
+                    if entry.get("b_value") is not None or _is_bvalue(modality_name):
+                        candidate = patient_dir / entry.get("file", "")
+                        if candidate.exists():
+                            targets.append(candidate)
+                elif isinstance(entry, str):
+                    candidate = patient_dir / entry
+                    if candidate.exists() and (_is_bvalue(modality) or modality.lower() == "dwi"):
+                        targets.append(candidate)
     if not targets:
         targets = [
             p for p in patient_dir.glob("*.nii.gz") if _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
@@ -295,4 +313,4 @@ def _is_bvalue(name: str) -> bool:
 
 
 def _is_dwi_modality(name: str) -> bool:
-    return name.lower() == "adc" or _is_bvalue(name)
+    return name.lower() in {"adc", "dwi"} or _is_bvalue(name)
