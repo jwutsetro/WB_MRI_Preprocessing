@@ -51,6 +51,23 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    python register_stations.py /path/to/output_root
    ```
 
+### SimpleElastix (registration)
+- Recommended: install the PyPI build that bundles Elastix/SimpleITK: `pip install SimpleITK-SimpleElastix`.
+- If you need to build locally (e.g., for newer SimpleITK), use the SimpleElastix superbuild on macOS/Apple Silicon:
+  ```bash
+  brew install cmake ninja git
+  git clone https://github.com/SuperElastix/SimpleElastix.git
+  cd SimpleElastix/SuperBuild
+  mkdir build && cd build
+  cmake -GNinja -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DUSE_ELASTIX=ON -DUSE_OPENMP=OFF -DPYTHON_EXECUTABLE=$(which python3) ..
+  ninja
+  python3 -m pip install --upgrade --force-reinstall SimpleITK-build/Wrapping/Python/dist/SimpleITK-*.whl
+  python - <<'PY'
+  import SimpleITK as sitk; print("Elastix available:", hasattr(sitk, "Elastix"))
+  PY
+  ```
+  (The default PyPI `SimpleITK` wheel lacks SimpleElastix.)
+
 ## Notes
 - Outputs: `output_dir/<patient>/<modality>/<station>.nii.gz` (stations are numeric). DWI b-values become modality folder names (e.g., `output_dir/<patient>/1000/1.nii.gz`). DICOM metadata is summarized per patient in `output_dir/<patient>/metadata.json`.
 - Known sequence names are defined in `dicom_config.json` (e.g., T1, DWI, Dixon_IP/OP/W/F). Update this file to add new sequences.

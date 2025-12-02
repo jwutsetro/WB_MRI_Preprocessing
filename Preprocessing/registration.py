@@ -59,15 +59,6 @@ def _mask_from_indices(image: sitk.Image, idx: Tuple[int, int]) -> sitk.Image:
     return mask
 
 
-def _crop_to_overlap(fixed: sitk.Image, moving: sitk.Image, overlap: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[sitk.Image, sitk.Image]:
-    (f_start, f_end), (m_start, m_end) = overlap
-    size_f = [fixed.GetSize()[0], fixed.GetSize()[1], max(1, f_end - f_start)]
-    size_m = [moving.GetSize()[0], moving.GetSize()[1], max(1, m_end - m_start)]
-    roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=[0, 0, f_start])
-    roi_m = sitk.RegionOfInterest(moving, size=size_m, index=[0, 0, m_start])
-    return roi_f, roi_m
-
-
 def _translation_registration(
     fixed: sitk.Image,
     moving: sitk.Image,

@@ -27,6 +27,7 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 - When adding new sequences, extend `config/pipeline.example.yaml` and update docs.
 
 ## Running
+- Always activate the repo virtualenv (`source venv/bin/activate`) so SimpleITK-SimpleElastix is available.
 - Full pipeline: `python -m Preprocessing.cli run --config config/pipeline.example.yaml`.
 - Sequence scan only: `python -m Preprocessing.cli scan-sequences --config ... --patient-dir ...`.
 - Use `--array-index/--array-size` for SLURM job arrays.
