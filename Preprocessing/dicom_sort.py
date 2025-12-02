@@ -10,7 +10,7 @@ import numpy as np
 
 
 from Preprocessing.config import PipelineConfig, SequenceRule
-from Preprocessing.utils import prune_anatomical_modalities
+from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
 
 @dataclass
@@ -198,6 +198,7 @@ class DicomSorter:
         grouped = self._group_instances(instances)
         written: List[Path] = []
         modality_entries: Dict[str, List[Dict]] = {}
+        skipped_sequences: List[Dict] = []
         all_dicoms: set[Path] = set(p for p in patient_dir.rglob("*") if p.is_file())
         used_dicoms: set[Path] = set()
 
@@ -221,9 +222,46 @@ class DicomSorter:
                 }
             )
 
+        # Select anatomical modality and keep all DWI; skip others
+        selected_anatomical: Optional[str] = None
+        anatomical_entries = [e for e in temp_entries if e["rule"].is_anatomical]
+        for name in ANATOMICAL_PRIORITY:
+            if any((e["rule"].canonical_modality or e["rule"].output_modality) == name for e in anatomical_entries):
+                selected_anatomical = name
+                break
+        allowed_entries = []
+        for entry in temp_entries:
+            canonical = entry["rule"].canonical_modality or entry["rule"].output_modality
+            is_dwi = canonical.lower() == "dwi"
+            if entry["rule"].is_anatomical:
+                if selected_anatomical and canonical == selected_anatomical:
+                    allowed_entries.append(entry)
+                else:
+                    skipped_sequences.append(
+                        {
+                            "rule": entry["rule"].name,
+                            "canonical_modality": canonical,
+                            "series_uid": entry["series_uid"],
+                            "series_description": entry["instances"][0].series_description,
+                            "protocol_name": entry["instances"][0].protocol_name,
+                        }
+                    )
+            elif is_dwi:
+                allowed_entries.append(entry)
+            else:
+                skipped_sequences.append(
+                    {
+                        "rule": entry["rule"].name,
+                        "canonical_modality": canonical,
+                        "series_uid": entry["series_uid"],
+                        "series_description": entry["instances"][0].series_description,
+                        "protocol_name": entry["instances"][0].protocol_name,
+                    }
+                )
+
         # Station ordering per canonical modality by origin z, consistent across b-values
         by_modality: Dict[str, List[Dict]] = {}
-        for entry in temp_entries:
+        for entry in allowed_entries:
             canonical = entry["rule"].canonical_modality or entry["rule"].output_modality
             by_modality.setdefault(canonical, []).append(entry)
         for canonical, entries in by_modality.items():
@@ -237,6 +275,7 @@ class DicomSorter:
             for entry in entries:
                 rule: SequenceRule = entry["rule"]
                 station_idx = series_order.get(entry["series_uid"], 0)
+                target_modality = "T1" if entry["rule"].is_anatomical else canonical
                 written_path, image = self._write_series(
                     rule=rule,
                     b_value=entry["b_value"],
@@ -250,7 +289,7 @@ class DicomSorter:
                 modality_entries.setdefault(canonical, []).append(
                     {
                         "rule": rule.name,
-                        "canonical_modality": canonical,
+                        "canonical_modality": target_modality if entry["rule"].is_anatomical else canonical,
                         "series_uid": entry["series_uid"],
                         "b_value": entry["b_value"],
                         "station_index": station_idx,
@@ -264,13 +303,13 @@ class DicomSorter:
                     }
                 )
 
-        self._write_metadata(output_dir, patient_dir.name, modality_entries)
+        self._write_metadata(output_dir, patient_dir.name, modality_entries, skipped_sequences)
         self._apply_dwi_background_mask(output_dir)
         prune_anatomical_modalities(output_dir)
         self._report_unused(patient_dir, used_dicoms, all_dicoms)
         return written
 
-    def _write_metadata(self, patient_output: Path, patient_id: str, modality_entries: Dict[str, List[Dict]]) -> None:
+    def _write_metadata(self, patient_output: Path, patient_id: str, modality_entries: Dict[str, List[Dict]], skipped: List[Dict]) -> None:
         meta_path = patient_output / "metadata.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         anatomical_modalities = {
@@ -291,6 +330,7 @@ class DicomSorter:
                 }
                 for modality, entries in modality_entries.items()
             },
+            "skipped_sequences": skipped,
         }
         meta_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 

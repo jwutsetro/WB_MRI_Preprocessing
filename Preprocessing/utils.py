@@ -68,23 +68,30 @@ def prune_dwi_directories(patient_dir: Path) -> None:
 
 def _rewrite_modalities(meta: Dict, source_name: str, target_name: str) -> None:
     modalities = meta.get("modalities", {})
-    if source_name in modalities:
-        entries = modalities.pop(source_name)
-        for entry in entries:
+    modality_dict = modalities.pop(source_name, None)
+    if modality_dict is None:
+        return
+    files = modality_dict.get("files", [])
+    for entry in files:
+        if isinstance(entry, dict) and "file" in entry:
             entry["file"] = str(Path(target_name) / Path(entry["file"]).name)
-        modalities[target_name] = entries
+    modality_dict["files"] = files
+    modalities[target_name] = modality_dict
     meta["modalities"] = modalities
 
 
 def _rewrite_dwi_modalities(meta: Dict, original_name: str) -> None:
     modalities = meta.get("modalities", {})
-    if original_name not in modalities:
+    modality_dict = modalities.pop(original_name, None)
+    if modality_dict is None:
         return
-    entries = modalities.pop(original_name)
-    for entry in entries:
-        entry["file"] = str(Path("dwi") / Path(entry["file"]).name)
-        entry["b_value"] = float(original_name)
-    modalities["dwi"] = entries
+    files = modality_dict.get("files", [])
+    for entry in files:
+        if isinstance(entry, dict) and "file" in entry:
+            entry["file"] = str(Path("dwi") / Path(entry["file"]).name)
+            entry["b_value"] = float(original_name)
+    modality_dict["files"] = files
+    modalities["dwi"] = modality_dict
     meta["modalities"] = modalities
 
 
