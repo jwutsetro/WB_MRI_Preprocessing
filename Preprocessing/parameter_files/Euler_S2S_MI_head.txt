@@ -28,9 +28,9 @@
 
 (ASGDParameterEstimationMethod "Original")
 (NumberOfResolutions 2)
-(MaximumNumberOfIterations 800)
+(MaximumNumberOfIterations 600)
 (AutomaticParameterEstimation "true")
-(MaximumStepLength 0.5)
+(MaximumStepLength 0.2)
 
 // *****************
 // ** Transform Settings
@@ -52,7 +52,7 @@
 // *****************
 
 (ImageSampler "RandomCoordinate")
-(NumberOfSpatialSamples 2048)
+(NumberOfSpatialSamples 1536)
 (CheckNumberOfSamples "true")
 (NewSamplesEveryIteration "true")
 (UseRandomSampleRegion "false")

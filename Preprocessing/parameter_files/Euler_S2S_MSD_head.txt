@@ -28,16 +28,16 @@
 
 (ASGDParameterEstimationMethod "Original")
 (NumberOfResolutions 2)
-(MaximumNumberOfIterations 1200)
+(MaximumNumberOfIterations 900)
 (AutomaticParameterEstimation "true")
-(MaximumStepLength 0.5)
+(MaximumStepLength 0.2)
 
 // *****************
 // ** Transform Settings
 // *****************
 
 (HowToCombineTransforms "Compose")
-(AutomaticTransformInitialization "false")
+(AutomaticTransformInitialization "true")
 (AutomaticScalesEstimation "false")
 (Scales 1 0.25 8000)
 
@@ -52,7 +52,7 @@
 // *****************
 
 (ImageSampler "RandomSparseMask")
-(NumberOfSpatialSamples 2048)
+(NumberOfSpatialSamples 1536)
 (CheckNumberOfSamples "true")
 (NewSamplesEveryIteration "true")
 (UseRandomSampleRegion "false")
