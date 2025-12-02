@@ -61,7 +61,7 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
     if len(stations) < 2:
         return
     fixed_img = stations[0]["image"]
-    for station in stations[1:]:
+    for idx, station in enumerate(stations[1:], start=1):
         moving_img = station["image"]
         mask = _overlap_mask(fixed_img, moving_img)
         if mask is None:
