@@ -14,6 +14,7 @@ from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 from Preprocessing.isis import standardize_patient
 from Preprocessing.registration import register_patient, register_wholebody_dwi_to_anatomical
+from Preprocessing.merge_wb import merge_patient
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
@@ -85,31 +86,7 @@ class PipelineRunner:
         register_patient(patient_output)
 
     def _run_reconstruct(self, patient_output: Path) -> None:
-        for modality_dir in patient_output.iterdir():
-            if not modality_dir.is_dir():
-                continue
-            station_files = sorted(modality_dir.glob("*.nii*"))
-            if len(station_files) <= 1:
-                continue
-            station_files.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
-            station_images = [sitk.ReadImage(str(p)) for p in station_files]
-            spacing = station_images[0].GetSpacing()
-            size_x, size_y = station_images[0].GetSize()[:2]
-            total_z = sum(im.GetSize()[2] for im in station_images)
-            output = sitk.Image(size_x, size_y, total_z, sitk.sitkFloat32)
-            output.SetSpacing(spacing)
-            output.SetOrigin(station_images[0].GetOrigin())
-            output.SetDirection(station_images[0].GetDirection())
-            current_z = 0
-            paste = sitk.PasteImageFilter()
-            for image in station_images:
-                size = image.GetSize()
-                paste.SetDestinationIndex([0, 0, current_z])
-                paste.SetSourceIndex([0, 0, 0])
-                paste.SetSourceSize(size)
-                output = paste.Execute(output, image)
-                current_z += size[2]
-            sitk.WriteImage(output, str(patient_output / f"{modality_dir.name}_WB.nii.gz"), True)
+        merge_patient(patient_output)
 
     def _run_resample_to_t1(self, patient_output: Path) -> None:
         register_wholebody_dwi_to_anatomical(patient_output)

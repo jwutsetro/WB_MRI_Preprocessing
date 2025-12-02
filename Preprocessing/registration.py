@@ -156,25 +156,29 @@ def _choose_anatomical_wb(patient_dir: Path) -> Optional[Path]:
     candidates: List[Path] = []
     if metadata:
         for modality in metadata.get("anatomical_modalities", []):
-            candidate = patient_dir / f"{modality}_WB.nii.gz"
-            if candidate.exists():
-                candidates.append(candidate)
-    candidates.sort(key=lambda p: _anatomical_priority(_modality_from_wb(p)))
+            for candidate in _candidate_paths(patient_dir, modality):
+                if candidate.exists():
+                    candidates.append(candidate)
+    candidates.sort(key=lambda p: _anatomical_priority(_modality_from_path(p)))
     if candidates:
         return candidates[0]
-    fallbacks = [p for p in patient_dir.glob("*_WB.nii.gz") if not _is_dwi_modality(_modality_from_wb(p))]
-    fallbacks.sort(key=lambda p: _anatomical_priority(_modality_from_wb(p)))
+    fallbacks = [
+        p
+        for p in patient_dir.glob("*.nii.gz")
+        if not _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
+    ]
+    fallbacks.sort(key=lambda p: _anatomical_priority(_modality_from_path(p)))
     return fallbacks[0] if fallbacks else None
 
 
 def _choose_dwi_wb(patient_dir: Path) -> Optional[Path]:
     targets = _wb_dwi_targets(patient_dir)
-    adc = [t for t in targets if _modality_from_wb(t).lower() == "adc"]
+    adc = [t for t in targets if _modality_from_path(t).lower() == "adc"]
     if adc:
         return adc[0]
     numeric: List[tuple[float, Path]] = []
     for candidate in targets:
-        modality = _modality_from_wb(candidate)
+        modality = _modality_from_path(candidate)
         try:
             numeric.append((float(modality), candidate))
         except ValueError:
@@ -186,12 +190,24 @@ def _choose_dwi_wb(patient_dir: Path) -> Optional[Path]:
 
 
 def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
-    targets = [
-        path
-        for path in patient_dir.glob("*_WB.nii.gz")
-        if _is_dwi_modality(_modality_from_wb(path))
-    ]
-    targets.sort(key=lambda p: _modality_from_wb(p))
+    targets = []
+    metadata = _load_metadata(patient_dir)
+    modalities = set()
+    if metadata:
+        modalities.update(metadata.get("modalities", {}).keys())
+        for entries in metadata.get("modalities", {}).values():
+            for entry in entries:
+                if entry.get("b_value") is not None:
+                    modalities.add(str(entry["b_value"]))
+    for modality in modalities:
+        for candidate in _candidate_paths(patient_dir, modality):
+            if candidate.exists() and _is_dwi_modality(modality):
+                targets.append(candidate)
+    if not targets:
+        targets = [
+            p for p in patient_dir.glob("*.nii.gz") if _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
+        ]
+    targets = sorted(set(targets), key=lambda p: _modality_from_path(p))
     return targets
 
 
@@ -218,9 +234,21 @@ def _load_metadata(patient_dir: Path) -> Optional[Dict]:
         return None
 
 
-def _modality_from_wb(path: Path) -> str:
+def _modality_from_path(path: Path) -> str:
     name = path.stem
     return name[:-3] if name.endswith("_WB") else name
+
+
+def _candidate_paths(patient_dir: Path, modality: str) -> List[Path]:
+    return [
+        patient_dir / f"{modality}_WB.nii.gz",
+        patient_dir / f"{modality}.nii.gz",
+    ]
+
+
+def _looks_wholebody_name(path: Path) -> bool:
+    stem = path.stem
+    return stem.endswith("_WB") or stem.isalpha() or _is_bvalue(stem)
 
 
 def _anatomical_priority(modality: str) -> int:
