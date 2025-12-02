@@ -144,7 +144,7 @@ def _station_weight_image(
     return weight_img
 
 
-def _write_outputs(patient_dir: Path, modality: str, image: sitk.Image) -> None:
+def _write_output(patient_dir: Path, modality: str, image: sitk.Image) -> None:
     target_plain = patient_dir / f"{modality}.nii.gz"
     sitk.WriteImage(image, str(target_plain), True)
 
