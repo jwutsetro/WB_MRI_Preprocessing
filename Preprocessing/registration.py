@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import SimpleITK as sitk
 
 
@@ -75,6 +76,7 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
             fixed_img = moving_img
             continue
         fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
+        mask = _overlap_sampling_mask(fixed_roi, moving_roi)
         is_top_pair = idx == len(stations) - 1
         param_files = (
             ("Euler_S2S_MSD_head.txt", "Euler_S2S_MI_head.txt")
@@ -84,7 +86,7 @@ def _register_chain(stations: List[Dict], patient_dir: Path) -> None:
         param_maps = _run_elastix(
             fixed=fixed_roi,
             moving=moving_roi,
-            mask=None,
+            mask=mask,
             parameter_files=param_files,
             moving_origin=moving_img.GetOrigin(),
             output_reference=moving_img,
@@ -180,6 +182,20 @@ def _extract_overlap_images(
     roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=(xf0, yf0, zf0))
     roi_m = sitk.RegionOfInterest(moving, size=size_m, index=(xm0, ym0, zm0))
     return roi_f, roi_m
+
+
+def _overlap_sampling_mask(fixed_roi: sitk.Image, moving_roi: sitk.Image, threshold: float = 0.1, min_voxels: int = 500) -> sitk.Image:
+    """Mask overlap region to voxels with signal in fixed ROI (e.g., non-head) above threshold and any signal in moving."""
+    fixed_arr = sitk.GetArrayFromImage(fixed_roi).astype(np.float32)
+    moving_arr = sitk.GetArrayFromImage(moving_roi).astype(np.float32)
+    mask_arr = (fixed_arr > threshold) & (moving_arr > 0)
+    if mask_arr.sum() < min_voxels:
+        mask_arr = np.ones_like(mask_arr, dtype=np.uint8)
+    else:
+        mask_arr = mask_arr.astype(np.uint8)
+    mask_img = sitk.GetImageFromArray(mask_arr)
+    mask_img.CopyInformation(fixed_roi)
+    return mask_img
 
 
 def _set_output_geometry(
