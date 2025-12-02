@@ -8,10 +8,14 @@ import numpy as np
 import SimpleITK as sitk
 
 
+ANATOMICAL_PRIORITY = ["T1", "DixonIP", "Dixon", "T2", "T1post"]
+
+
 def merge_patient(patient_dir: Path) -> None:
-    """Merge all station images for each modality into whole-body volumes with feathered overlaps, then remove station folders."""
-    modality_dirs = [d for d in patient_dir.iterdir() if d.is_dir()]
-    for modality_dir in modality_dirs:
+    """Merge selected modalities into whole-body volumes with feathered overlaps, then remove station folders."""
+    modality_dirs = {d.name: d for d in patient_dir.iterdir() if d.is_dir()}
+    targets = _select_modalities(modality_dirs)
+    for out_name, modality_dir in targets.items():
         station_files = sorted(modality_dir.glob("*.nii*"))
         if not station_files:
             continue
@@ -20,7 +24,7 @@ def merge_patient(patient_dir: Path) -> None:
             continue
         reference = _reference_image(stations)
         merged = _feather_merge(stations, reference)
-        _write_output(patient_dir, modality_dir.name, merged)
+        _write_output(patient_dir, out_name, merged)
         _safe_remove_dir(modality_dir)
 
 
@@ -156,3 +160,20 @@ def _safe_remove_dir(path: Path) -> None:
         shutil.rmtree(path)
     except Exception:
         pass
+
+
+def _select_modalities(modality_dirs: Dict[str, Path]) -> Dict[str, Path]:
+    """Choose one anatomical (as T1), dwi (if present), and ADC."""
+    selected: Dict[str, Path] = {}
+    # anatomical
+    for name in ANATOMICAL_PRIORITY:
+        if name in modality_dirs:
+            selected["T1"] = modality_dirs[name]
+            break
+    # DWI (already pruned to "dwi")
+    if "dwi" in modality_dirs:
+        selected["dwi"] = modality_dirs["dwi"]
+    # ADC
+    if "ADC" in modality_dirs:
+        selected["ADC"] = modality_dirs["ADC"]
+    return selected

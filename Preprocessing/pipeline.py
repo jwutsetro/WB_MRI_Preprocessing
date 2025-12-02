@@ -15,6 +15,7 @@ from Preprocessing.nyul import fit_nyul_model, load_model, save_model
 from Preprocessing.isis import standardize_patient
 from Preprocessing.registration import register_patient, register_wholebody_dwi_to_anatomical
 from Preprocessing.merge_wb import merge_patient
+from Preprocessing.utils import prune_dwi_directories, update_selected_modalities
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
@@ -75,6 +76,7 @@ class PipelineRunner:
 
     def _run_adc(self, patient_output: Path) -> None:
         compute_adc_for_patient(patient_output)
+        prune_dwi_directories(patient_output)
 
     def _run_bias(self, patient_output: Path) -> None:
         run_noise_bias(patient_output)
@@ -87,6 +89,7 @@ class PipelineRunner:
 
     def _run_reconstruct(self, patient_output: Path) -> None:
         merge_patient(patient_output)
+        update_selected_modalities(patient_output)
 
     def _run_resample_to_t1(self, patient_output: Path) -> None:
         register_wholebody_dwi_to_anatomical(patient_output)

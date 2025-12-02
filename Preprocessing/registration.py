@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -25,10 +24,11 @@ def register_patient(patient_dir: Path) -> None:
 
 
 def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
-    """Register whole-body DWI (ADC or highest b-value) to anatomical WB and apply the transform to all DWI WB volumes."""
-    fixed_path = _choose_anatomical_wb(patient_dir)
-    moving_path = _choose_dwi_wb(patient_dir)
-    if fixed_path is None or moving_path is None:
+    """Register whole-body ADC to anatomical (T1) and apply the transform to DWI."""
+    fixed_path = patient_dir / "T1.nii.gz"
+    moving_path = patient_dir / "ADC.nii.gz"
+    dwi_path = patient_dir / "dwi.nii.gz"
+    if not fixed_path.exists() or not moving_path.exists():
         return
     fixed = sitk.ReadImage(str(fixed_path))
     moving = sitk.ReadImage(str(moving_path))
@@ -38,10 +38,12 @@ def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
         mask=None,
         parameter_files=("S2A_Pair_Euler_WB.txt", "S2A_Pair_BSpline_WB.txt"),
     )
-    for target in _wb_dwi_targets(patient_dir):
-        img = sitk.ReadImage(str(target))
-        result = _apply_transformix(img, param_maps)
-        sitk.WriteImage(result, str(target), True)
+    adc_reg = _apply_transformix(moving, param_maps)
+    sitk.WriteImage(adc_reg, str(moving_path), True)
+    if dwi_path.exists():
+        dwi_img = sitk.ReadImage(str(dwi_path))
+        dwi_reg = _apply_transformix(dwi_img, param_maps)
+        sitk.WriteImage(dwi_reg, str(dwi_path), True)
 
 
 def _load_adc_stations(adc_dir: Path) -> List[Dict]:
@@ -166,7 +168,7 @@ def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameter
 
 
 def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps: sitk.VectorOfParameterMap) -> None:
-    for modality_dir in _bvalue_dirs(patient_dir):
+    for modality_dir in _dwi_dirs(patient_dir):
         target = modality_dir / f"{station_name}.nii.gz"
         if not target.exists():
             continue
@@ -175,69 +177,12 @@ def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps
         sitk.WriteImage(result, str(target), True)
 
 
-def _choose_anatomical_wb(patient_dir: Path) -> Optional[Path]:
-    metadata = _load_metadata(patient_dir)
-    candidates: List[Path] = []
-    if metadata:
-        for modality in metadata.get("anatomical_modalities", []):
-            for candidate in _candidate_paths(patient_dir, modality):
-                if candidate.exists():
-                    candidates.append(candidate)
-    candidates.sort(key=lambda p: _anatomical_priority(_modality_from_path(p)))
-    if candidates:
-        return candidates[0]
-    fallbacks = [
-        p
-        for p in patient_dir.glob("*.nii.gz")
-        if not _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
-    ]
-    fallbacks.sort(key=lambda p: _anatomical_priority(_modality_from_path(p)))
-    return fallbacks[0] if fallbacks else None
-
-
-def _choose_dwi_wb(patient_dir: Path) -> Optional[Path]:
-    targets = _wb_dwi_targets(patient_dir)
-    adc = [t for t in targets if _modality_from_path(t).lower() == "adc"]
-    if adc:
-        return adc[0]
-    numeric: List[tuple[float, Path]] = []
-    for candidate in targets:
-        modality = _modality_from_path(candidate)
-        try:
-            numeric.append((float(modality), candidate))
-        except ValueError:
-            continue
-    if numeric:
-        numeric.sort(key=lambda t: t[0], reverse=True)
-        return numeric[0][1]
-    return targets[0] if targets else None
-
-
-def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
-    targets = []
-    metadata = _load_metadata(patient_dir)
-    modalities = set()
-    if metadata:
-        modalities.update(metadata.get("modalities", {}).keys())
-        for entries in metadata.get("modalities", {}).values():
-            for entry in entries:
-                if entry.get("b_value") is not None:
-                    modalities.add(str(entry["b_value"]))
-    for modality in modalities:
-        for candidate in _candidate_paths(patient_dir, modality):
-            if candidate.exists() and _is_dwi_modality(modality):
-                targets.append(candidate)
-    if not targets:
-        targets = [
-            p for p in patient_dir.glob("*.nii.gz") if _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
-        ]
-    targets = sorted(set(targets), key=lambda p: _modality_from_path(p))
-    return targets
-
-
-def _bvalue_dirs(patient_dir: Path) -> List[Path]:
-    dirs = [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)]
-    dirs.sort(key=lambda p: float(p.name))
+def _dwi_dirs(patient_dir: Path) -> List[Path]:
+    dirs = []
+    dwi_dir = patient_dir / "dwi"
+    if dwi_dir.is_dir():
+        dirs.append(dwi_dir)
+    dirs.extend([p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)])
     return dirs
 
 
@@ -248,51 +193,9 @@ def _load_parameter_map(filename: str) -> sitk.ParameterMap:
     return sitk.ReadParameterFile(str(path))
 
 
-def _load_metadata(patient_dir: Path) -> Optional[Dict]:
-    meta_path = patient_dir / "metadata.json"
-    if not meta_path.exists():
-        return None
-    try:
-        return json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-def _modality_from_path(path: Path) -> str:
-    name = path.stem
-    return name[:-3] if name.endswith("_WB") else name
-
-
-def _candidate_paths(patient_dir: Path, modality: str) -> List[Path]:
-    return [
-        patient_dir / f"{modality}_WB.nii.gz",
-        patient_dir / f"{modality}.nii.gz",
-    ]
-
-
-def _looks_wholebody_name(path: Path) -> bool:
-    stem = path.stem
-    return stem.endswith("_WB") or stem.isalpha() or _is_bvalue(stem)
-
-
-def _anatomical_priority(modality: str) -> int:
-    name = modality.lower()
-    if name == "t1":
-        return 0
-    if "t2" in name:
-        return 1
-    if "dixon" in name:
-        return 2
-    return 3
-
-
 def _is_bvalue(name: str) -> bool:
     try:
         float(name)
         return True
     except ValueError:
         return False
-
-
-def _is_dwi_modality(name: str) -> bool:
-    return name.lower() == "adc" or _is_bvalue(name)
