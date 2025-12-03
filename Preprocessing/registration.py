@@ -14,17 +14,35 @@ HEAD_INITIAL_TRANSLATION_MM = 30.0
 
 
 def register_patient(patient_dir: Path) -> None:
-    """Run station-to-station registration (ADC-driven) and apply transforms to all DWI stations."""
+    """Run station-to-station registration driven by DWI and apply transforms to ADC and all DWI stations."""
+    registration_dir = _choose_registration_dwi_dir(patient_dir)
     adc_dir = patient_dir / "ADC"
-    if not adc_dir.exists():
+    if registration_dir is None and not adc_dir.exists():
         return
-    stations = _load_adc_stations(adc_dir)
+    if registration_dir is None:
+        registration_dir = adc_dir
+    stations = _load_stations(registration_dir)
     if len(stations) <= 1:
         return
     center_idx = (len(stations) - 1) // 2
     head_path = stations[-1]["path"]
-    _register_chain(stations[center_idx:], patient_dir, head_path=head_path)
-    _register_chain(list(reversed(stations[: center_idx + 1])), patient_dir, head_path=head_path)
+    adc_index = _build_station_index(adc_dir) if adc_dir.exists() else {}
+    dwi_dirs = _bvalue_dirs(patient_dir)
+    dwi_indices = {d: _build_station_index(d) for d in dwi_dirs}
+    _register_chain(
+        stations[center_idx:],
+        head_path=head_path,
+        adc_index=adc_index,
+        dwi_indices=dwi_indices,
+        registration_dir=registration_dir,
+    )
+    _register_chain(
+        list(reversed(stations[: center_idx + 1])),
+        head_path=head_path,
+        adc_index=adc_index,
+        dwi_indices=dwi_indices,
+        registration_dir=registration_dir,
+    )
 
 
 def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
@@ -55,19 +73,55 @@ def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
 
 
 def _load_adc_stations(adc_dir: Path) -> List[Dict]:
+    """Deprecated wrapper; use _load_stations for arbitrary modalities."""
+    return _load_stations(adc_dir)
+
+
+def _load_stations(modality_dir: Path) -> List[Dict]:
     stations: List[Dict] = []
-    for path in sorted(adc_dir.glob("*.nii*")):
+    for path in sorted(modality_dir.glob("*.nii*")):
         try:
             img = sitk.ReadImage(str(path))
         except Exception:
             continue
         origin_z = img.GetOrigin()[2]
-        stations.append({"path": path, "image": img, "origin_z": origin_z})
+        stations.append({"path": path, "image": img, "origin_z": origin_z, "station": _station_key(path)})
     stations.sort(key=lambda s: (s["origin_z"], s["path"].stem))
     return stations
 
 
-def _register_chain(stations: List[Dict], patient_dir: Path, head_path: Optional[Path] = None) -> None:
+def _build_station_index(modality_dir: Path) -> Dict[str, Path]:
+    return {_station_key(path): path for path in modality_dir.glob("*.nii*")}
+
+
+def _station_key(path: Path) -> str:
+    name = path.name
+    for suffix in (".nii.gz", ".nii", ".mha", ".mhd", ".nrrd"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+def _choose_registration_dwi_dir(patient_dir: Path) -> Optional[Path]:
+    dwi_dirs = _bvalue_dirs(patient_dir)
+    if dwi_dirs:
+        return dwi_dirs[0]
+    candidate = patient_dir / "dwi"
+    if candidate.is_dir():
+        return candidate
+    candidate_upper = patient_dir / "DWI"
+    if candidate_upper.is_dir():
+        return candidate_upper
+    return None
+
+
+def _register_chain(
+    stations: List[Dict],
+    head_path: Optional[Path] = None,
+    adc_index: Optional[Dict[str, Path]] = None,
+    dwi_indices: Optional[Dict[Path, Dict[str, Path]]] = None,
+    registration_dir: Optional[Path] = None,
+) -> None:
     if len(stations) < 2:
         return
     fixed_img = stations[0]["image"]
@@ -95,10 +149,17 @@ def _register_chain(stations: List[Dict], patient_dir: Path, head_path: Optional
             output_reference=moving_img,
             initial_translation=initial_translation,
         )
-        result_adc = _apply_transformix(moving_img, param_maps)
-        sitk.WriteImage(result_adc, str(station["path"]), True)
-        _apply_transform_to_dwi(patient_dir, station["path"].stem, param_maps)
-        fixed_img = result_adc
+        result_reg = _apply_transformix(moving_img, param_maps)
+        sitk.WriteImage(result_reg, str(station["path"]), True)
+        _apply_transform_to_targets(
+            station_name=station.get("station", station["path"].stem),
+            parameter_maps=param_maps,
+            adc_index=adc_index,
+            dwi_indices=dwi_indices,
+            skip_paths={station["path"]},
+            registration_dir=registration_dir,
+        )
+        fixed_img = result_reg
 
 
 def _head_initial_translation(image: sitk.Image, offset_mm: float = HEAD_INITIAL_TRANSLATION_MM) -> Tuple[float, float, float]:
@@ -263,6 +324,41 @@ def _apply_transformix(image: sitk.Image, parameter_maps: sitk.VectorOfParameter
     transformix.SetMovingImage(image)
     transformix.Execute()
     return transformix.GetResultImage()
+
+
+def _apply_transform_to_targets(
+    station_name: str,
+    parameter_maps: sitk.VectorOfParameterMap,
+    adc_index: Optional[Dict[str, Path]] = None,
+    dwi_indices: Optional[Dict[Path, Dict[str, Path]]] = None,
+    skip_paths: Optional[set[Path]] = None,
+    registration_dir: Optional[Path] = None,
+) -> None:
+    skip_resolved = {p.resolve() for p in skip_paths} if skip_paths else set()
+
+    def _should_skip(path: Path) -> bool:
+        resolved = path.resolve()
+        return resolved in skip_resolved
+
+    if adc_index is not None:
+        target = adc_index.get(station_name)
+        if target is not None and target.exists() and not _should_skip(target):
+            moving = sitk.ReadImage(str(target))
+            result = _apply_transformix(moving, parameter_maps)
+            sitk.WriteImage(result, str(target), True)
+
+    if dwi_indices is not None:
+        for modality_dir, index in dwi_indices.items():
+            target = index.get(station_name)
+            if target is None or not target.exists():
+                continue
+            if registration_dir is not None and modality_dir == registration_dir and _should_skip(target):
+                continue
+            if _should_skip(target):
+                continue
+            moving = sitk.ReadImage(str(target))
+            result = _apply_transformix(moving, parameter_maps)
+            sitk.WriteImage(result, str(target), True)
 
 
 def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps: sitk.VectorOfParameterMap) -> None:
