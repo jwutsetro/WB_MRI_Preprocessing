@@ -114,12 +114,12 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
         use_pairs = pairs
     use_b = [b for b, _ in use_pairs]
     reference_image = pairs[0][1]
-    mask_img = compute_body_mask(reference_image, smoothing_sigma=1.0, closing_radius=1, dilation_radius=1)
-    mask_arr = sitk.GetArrayFromImage(mask_img).astype(np.float32)
+    #mask_img = compute_body_mask(reference_image, smoothing_sigma=1.0, closing_radius=1, dilation_radius=1)
+    #mask_arr = sitk.GetArrayFromImage(mask_img).astype(np.float32)
     arrays = []
     for _, im in use_pairs:
         arr = sitk.GetArrayFromImage(im).astype(np.float32)
-        arr = arr * mask_arr
+      #  arr = arr * mask_arr
         arr = np.maximum(arr, 1e-6)
         arrays.append(np.log(arr))
     log_stack = np.stack(arrays, axis=0)
@@ -129,7 +129,7 @@ def compute_adc_image(b_images: List[sitk.Image], b_values: List[float]) -> sitk
     adc_array = np.where(mean_signal >= BACKGROUND_INTENSITY_THRESHOLD, adc_array, 0.0)
     adc_array = adc_array * ADC_SCALE
     adc_array = np.where(adc_array > ADC_NOISE_THRESHOLD, 0.0, adc_array)
-    adc_array = adc_array * mask_arr
+    #adc_array = adc_array * mask_arr
     adc_image = sitk.GetImageFromArray(adc_array)
     adc_image.CopyInformation(imgs_sorted[0])
     return adc_image
