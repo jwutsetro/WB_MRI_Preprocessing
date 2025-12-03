@@ -18,6 +18,8 @@ def register_patient(patient_dir: Path) -> None:
     adc_dir = patient_dir / "ADC"
     if dwi_dir is None or not dwi_dir.exists() or not adc_dir.exists():
         return
+    param_dir = patient_dir / "_registration_params"
+    param_dir.mkdir(parents=True, exist_ok=True)
     stations = _load_stations(dwi_dir)
     if len(stations) <= 1:
         return
@@ -26,10 +28,12 @@ def register_patient(patient_dir: Path) -> None:
     _register_chain(
         stations[center_idx:],
         adc_index=adc_index,
+        param_dir=param_dir,
     )
     _register_chain(
         list(reversed(stations[: center_idx + 1])),
         adc_index=adc_index,
+        param_dir=param_dir,
     )
 
 
@@ -101,17 +105,20 @@ def _choose_dwi_dir(patient_dir: Path) -> Optional[Path]:
 def _register_chain(
     stations: List[Dict],
     adc_index: Optional[Dict[str, Path]] = None,
+    param_dir: Optional[Path] = None,
 ) -> None:
     if len(stations) < 2:
         return
     fixed_img = stations[0]["image"]
     cumulative_translation = np.zeros(3, dtype=float)
+    previous_param_file: Optional[Path] = None
     for idx, station in enumerate(stations[1:], start=1):
         moving_img = station["image"]
         overlap = _compute_overlap_indices(fixed_img, moving_img)
         if overlap is None:
             fixed_img = moving_img
             cumulative_translation = np.zeros(3, dtype=float)
+            previous_param_file = None
             continue
         fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
         mask = _overlap_sampling_mask(fixed_roi, moving_roi)
@@ -119,6 +126,7 @@ def _register_chain(
         initial_transform = (
             _build_initial_transform(cumulative_translation, moving_img) if np.any(cumulative_translation) else None
         )
+        initial_transform_file = str(previous_param_file) if previous_param_file is not None else None
         param_maps = _run_elastix(
             fixed=fixed_roi,
             moving=moving_roi,
@@ -127,10 +135,19 @@ def _register_chain(
             moving_origin=moving_img.GetOrigin(),
             output_reference=moving_img,
             initial_transform=initial_transform,
+            initial_transform_file=initial_transform_file,
         )
         result_reg = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_reg, str(station["path"]), True)
         cumulative_translation += _translation_from_param_maps(param_maps)
+        if param_dir is not None:
+            param_dir.mkdir(parents=True, exist_ok=True)
+            param_file = param_dir / f"{station.get('station', station['path'].stem)}_init.txt"
+            try:
+                sitk.WriteParameterFile(param_maps[0], str(param_file))
+                previous_param_file = param_file
+            except Exception:
+                previous_param_file = None
         _apply_transform_to_targets(
             station_name=station.get("station", station["path"].stem),
             parameter_maps=param_maps,
@@ -148,6 +165,7 @@ def _run_elastix(
     moving_origin: Optional[Tuple[float, float, float]] = None,
     output_reference: Optional[sitk.Image] = None,
     initial_transform: Optional[sitk.VectorOfParameterMap] = None,
+    initial_transform_file: Optional[str] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
     elastix.LogToConsoleOn()
@@ -159,7 +177,16 @@ def _run_elastix(
         params.append(param_map)
     elastix.SetParameterMap(params)
     if initial_transform is not None and len(initial_transform) > 0:
-        elastix.SetInitialTransformParameterMap(initial_transform)
+        if hasattr(elastix, "SetInitialTransformParameterMap"):
+            elastix.SetInitialTransformParameterMap(initial_transform)
+        else:
+            print("[registration] Initial transform not supported by this SimpleITK build; running without initialization.")
+    elif initial_transform_file is not None:
+        for param_map in params:
+            param_map["InitialTransformParametersFileName"] = [initial_transform_file]
+    else:
+        for param_map in params:
+            param_map["InitialTransformParametersFileName"] = ["NoInitialTransform"]
     # Some parameter sets (RandomSparseMask) require a mask; supply a full-ones mask if none provided.
     def _sampler_name(param_map: sitk.ParameterMap) -> str:
         raw = param_map["ImageSampler"][0] if "ImageSampler" in param_map else ""
