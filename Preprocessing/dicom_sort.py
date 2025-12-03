@@ -9,7 +9,6 @@ import SimpleITK as sitk
 import numpy as np
 
 
-from Preprocessing.adc import compute_body_mask
 from Preprocessing.config import PipelineConfig, SequenceRule
 from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
@@ -34,6 +33,17 @@ def _crop_zero_padding_z(image: sitk.Image, threshold: float = 0.0) -> sitk.Imag
     spacing = image.GetSpacing()
     cropped.SetOrigin((origin[0], origin[1], origin[2] + z_start * spacing[2]))
     return cropped
+
+
+def _largest_component(mask: sitk.Image) -> sitk.Image:
+    """Keep only the largest connected component of a binary mask."""
+    if mask.GetNumberOfPixels() == 0:
+        return mask
+    labeled = sitk.ConnectedComponent(mask)
+    relabeled = sitk.RelabelComponent(labeled, sortByObjectSize=True)
+    largest = sitk.BinaryThreshold(relabeled, lowerThreshold=1, upperThreshold=1, insideValue=1, outsideValue=0)
+    largest.CopyInformation(mask)
+    return largest
 
 
 @dataclass
@@ -215,13 +225,40 @@ class DicomSorter:
         sitk.WriteImage(image, str(output_path), True)
         return output_path, image
 
-    def _mask_image_with_body(self, image: sitk.Image, existing_mask: Optional[sitk.Image] = None) -> Tuple[sitk.Image, sitk.Image]:
-        """Apply a robust body mask to a DWI image, returning the masked image and mask."""
-        mask = existing_mask or compute_body_mask(image, smoothing_sigma=1.2, closing_radius=2, dilation_radius=1)
-        masked = sitk.Mask(image, mask, outsideValue=0)
-        masked.CopyInformation(image)
-        mask.CopyInformation(image)
-        return masked, mask
+    def _body_mask_from_high_b(self, image: sitk.Image, background_threshold: float = 5.0) -> sitk.Image:
+        """Build a body mask from the highest b-value image using threshold + largest components."""
+        arr = sitk.GetArrayFromImage(image).astype(np.float32)
+        background_arr = (arr < background_threshold).astype(np.uint8)
+        background = sitk.GetImageFromArray(background_arr)
+        background.CopyInformation(image)
+        background = _largest_component(background)
+
+        body_arr = 1 - sitk.GetArrayFromImage(background).astype(np.uint8)
+        body = sitk.GetImageFromArray(body_arr)
+        body.CopyInformation(image)
+        body = _largest_component(body)
+        body.CopyInformation(image)
+        return body
+
+    def _build_dwi_body_masks(self, entries: List[Dict]) -> Dict[str, sitk.Image]:
+        """Create per-series body masks using the highest b-value image available."""
+        by_series: Dict[str, List[Dict]] = {}
+        for entry in entries:
+            by_series.setdefault(entry["series_uid"], []).append(entry)
+
+        masks: Dict[str, sitk.Image] = {}
+
+        def _b_to_float(b_val: Optional[str]) -> float:
+            try:
+                return float(b_val) if b_val is not None else float("-inf")
+            except ValueError:
+                return float("-inf")
+
+        for series_uid, series_entries in by_series.items():
+            best_entry = max(series_entries, key=lambda e: _b_to_float(e["b_value"]))
+            mask = self._body_mask_from_high_b(best_entry["image"])
+            masks[series_uid] = mask
+        return masks
 
     def sort_and_convert(self, patient_dir: Path, output_dir: Path) -> List[Path]:
         """Return list of written NIfTI files; also writes patient metadata JSON."""
@@ -305,7 +342,9 @@ class DicomSorter:
             for idx, (series_uid, _) in enumerate(sorted(series_origins.items(), key=lambda kv: kv[1]), start=1):
                 series_order[series_uid] = idx
 
-            dwi_mask_cache: Dict[str, sitk.Image] = {}
+            dwi_masks: Dict[str, sitk.Image] = {}
+            if canonical.lower() == "dwi":
+                dwi_masks = self._build_dwi_body_masks(entries)
 
             for entry in entries:
                 rule: SequenceRule = entry["rule"]
@@ -313,11 +352,11 @@ class DicomSorter:
                 target_modality = "T1" if entry["rule"].is_anatomical else canonical
                 image_to_write = entry["image"]
                 if canonical.lower() == "dwi":
-                    cached_mask = dwi_mask_cache.get(entry["series_uid"])
-                    image_to_write, cached_mask = self._mask_image_with_body(
-                        image_to_write, existing_mask=cached_mask
-                    )
-                    dwi_mask_cache[entry["series_uid"]] = cached_mask
+                    mask = dwi_masks.get(entry["series_uid"])
+                    if mask is not None:
+                        masked_img = sitk.Mask(image_to_write, mask, outsideValue=0)
+                        masked_img.CopyInformation(image_to_write)
+                        image_to_write = masked_img
                 written_path, image = self._write_series(
                     rule=rule,
                     b_value=entry["b_value"],
@@ -346,7 +385,6 @@ class DicomSorter:
                 )
 
         self._write_metadata(output_dir, patient_dir.name, modality_entries, skipped_sequences)
-        self._apply_dwi_background_mask(output_dir)
         prune_anatomical_modalities(output_dir)
         self._report_unused(patient_dir, used_dicoms, all_dicoms)
         return written
@@ -382,55 +420,3 @@ class DicomSorter:
             print(f"[WARN] Unused DICOMs for patient {patient_dir.name}: {len(unused)} files")
         else:
             print(f"[OK] All DICOMs converted for patient {patient_dir.name}")
-
-    def _apply_dwi_background_mask(self, output_dir: Path) -> None:
-        """Use b1000-derived body mask for all DWI b-values to align backgrounds."""
-        b_dirs = [p for p in output_dir.iterdir() if p.is_dir() and _is_float(p.name)]
-        if not b_dirs:
-            return
-        b1000_dirs = [d for d in b_dirs if _is_b1000(d.name)]
-        if not b1000_dirs:
-            return
-        b1000_dir = b1000_dirs[0]
-        other_dirs = [d for d in b_dirs if d != b1000_dir]
-        for b1000_file in sorted(b1000_dir.glob("*.nii*")):
-            station = b1000_file.stem
-            try:
-                b1000_img = sitk.ReadImage(str(b1000_file))
-            except Exception:
-                continue
-            mask_img = compute_body_mask(b1000_img, smoothing_sigma=1.2, closing_radius=2, dilation_radius=1)
-            masked_b1000, mask_img = self._mask_image_with_body(b1000_img, existing_mask=mask_img)
-            sitk.WriteImage(masked_b1000, str(b1000_file), True)
-            for b_dir in other_dirs:
-                target = b_dir / f"{station}.nii.gz"
-                if not target.exists():
-                    continue
-                try:
-                    img = sitk.ReadImage(str(target))
-                    arr = sitk.GetArrayFromImage(img).astype(np.float32)
-                    mask = sitk.GetArrayFromImage(mask_img).astype(np.float32)
-                    if arr.shape != mask.shape:
-                        continue
-                    masked = arr * mask
-                    out_img = sitk.GetImageFromArray(masked)
-                    out_img.CopyInformation(img)
-                    sitk.WriteImage(out_img, str(target), True)
-                except Exception:
-                    continue
-
-
-def _is_float(val: str) -> bool:
-    try:
-        float(val)
-        return True
-    except ValueError:
-        return False
-
-
-def _is_b1000(val: str) -> bool:
-    try:
-        b = float(val)
-        return abs(b - 1000.0) < 1e-3
-    except ValueError:
-        return False
