@@ -19,7 +19,7 @@
 (FixedImagePyramid "FixedSmoothingImagePyramid")
 (MovingImagePyramid "MovingSmoothingImagePyramid")
 (Optimizer "AdaptiveStochasticGradientDescent")
-(Transform "EulerTransform")
+(Transform "TranslationTransform")
 (Metric "AdvancedMattesMutualInformation")
 
 // *****************
@@ -38,8 +38,8 @@
 
 (HowToCombineTransforms "Compose")
 (AutomaticTransformInitialization "false")
-(AutomaticScalesEstimation "true")
-(AutomaticTransformInitializationMethod "CenterOfGravity")
+(AutomaticScalesEstimation "false")
+(Scales 1 1 10000)
 
 // *****************
 // ** Pyramid Settings

@@ -128,7 +128,7 @@ def _register_chain(
             continue
         fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
         mask = _overlap_sampling_mask(fixed_roi, moving_roi)
-        param_files = ("Euler_S2S_MSD.txt",)
+        param_files = ("Euler_S2S_MI.txt",)
         param_maps = _run_elastix(
             fixed=fixed_roi,
             moving=moving_roi,
