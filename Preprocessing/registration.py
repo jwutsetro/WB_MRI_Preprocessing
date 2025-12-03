@@ -10,7 +10,6 @@ import SimpleITK as sitk
 
 
 PARAMETER_DIR = Path(__file__).resolve().parent / "parameter_files"
-HEAD_INITIAL_TRANSLATION_MM = 30.0
 
 
 def register_patient(patient_dir: Path) -> None:
@@ -25,20 +24,17 @@ def register_patient(patient_dir: Path) -> None:
     if len(stations) <= 1:
         return
     center_idx = (len(stations) - 1) // 2
-    head_path = stations[-1]["path"]
     adc_index = _build_station_index(adc_dir) if adc_dir.exists() else {}
     dwi_dirs = _bvalue_dirs(patient_dir)
     dwi_indices = {d: _build_station_index(d) for d in dwi_dirs}
     _register_chain(
         stations[center_idx:],
-        head_path=head_path,
         adc_index=adc_index,
         dwi_indices=dwi_indices,
         registration_dir=registration_dir,
     )
     _register_chain(
         list(reversed(stations[: center_idx + 1])),
-        head_path=head_path,
         adc_index=adc_index,
         dwi_indices=dwi_indices,
         registration_dir=registration_dir,
@@ -117,7 +113,6 @@ def _choose_registration_dwi_dir(patient_dir: Path) -> Optional[Path]:
 
 def _register_chain(
     stations: List[Dict],
-    head_path: Optional[Path] = None,
     adc_index: Optional[Dict[str, Path]] = None,
     dwi_indices: Optional[Dict[Path, Dict[str, Path]]] = None,
     registration_dir: Optional[Path] = None,
@@ -133,13 +128,7 @@ def _register_chain(
             continue
         fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
         mask = _overlap_sampling_mask(fixed_roi, moving_roi)
-        is_head_pair = head_path is not None and station["path"] == head_path
-        initial_translation = _head_initial_translation(moving_img) if is_head_pair else None
-        param_files = (
-            ("Euler_S2S_MSD_head.txt", "Euler_S2S_MI_head.txt")
-            if is_head_pair
-            else ("Euler_S2S_MSD.txt", "Euler_S2S_MI.txt")
-        )
+        param_files = ("Euler_S2S_MSD.txt",)
         param_maps = _run_elastix(
             fixed=fixed_roi,
             moving=moving_roi,
@@ -147,7 +136,6 @@ def _register_chain(
             parameter_files=param_files,
             moving_origin=moving_img.GetOrigin(),
             output_reference=moving_img,
-            initial_translation=initial_translation,
         )
         result_reg = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_reg, str(station["path"]), True)
@@ -162,19 +150,6 @@ def _register_chain(
         fixed_img = result_reg
 
 
-def _head_initial_translation(image: sitk.Image, offset_mm: float = HEAD_INITIAL_TRANSLATION_MM) -> Tuple[float, float, float]:
-    """Return a translation vector that shifts the head anteriorly by offset_mm in patient space."""
-    direction = image.GetDirection()
-    if len(direction) != 9:
-        return (0.0, -offset_mm, 0.0)
-    y_axis = np.array([direction[1], direction[4], direction[7]], dtype=np.float64)
-    norm = float(np.linalg.norm(y_axis))
-    if norm == 0:
-        return (0.0, -offset_mm, 0.0)
-    scale = -offset_mm / norm
-    return tuple(float(scale * c) for c in y_axis)
-
-
 def _run_elastix(
     fixed: sitk.Image,
     moving: sitk.Image,
@@ -182,15 +157,12 @@ def _run_elastix(
     parameter_files: Sequence[str],
     moving_origin: Optional[Tuple[float, float, float]] = None,
     output_reference: Optional[sitk.Image] = None,
-    initial_translation: Optional[Tuple[float, float, float]] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
     elastix.LogToConsoleOn()
     elastix.SetFixedImage(fixed)
     elastix.SetMovingImage(moving)
     param_list = [_load_parameter_map(filename) for filename in parameter_files]
-    if initial_translation is not None and param_list:
-        _apply_initial_translation(param_list[0], initial_translation)
     params = sitk.VectorOfParameterMap()
     for param_map in param_list:
         params.append(param_map)
@@ -212,23 +184,6 @@ def _run_elastix(
         origin = moving_origin if moving_origin is not None else reference.GetOrigin()
         _set_output_geometry(param_map, reference, origin_override=origin)
     return result
-
-
-def _param_value(param_map: sitk.ParameterMap, key: str) -> str:
-    if key not in param_map or len(param_map[key]) == 0:
-        return ""
-    raw = param_map[key][0]
-    return raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
-
-
-def _apply_initial_translation(param_map: sitk.ParameterMap, translation: Tuple[float, float, float]) -> None:
-    if _param_value(param_map, "Transform").lower() != "translationtransform":
-        return
-    param_map["AutomaticTransformInitialization"] = ("false",)
-    param_map["TransformParameters"] = [str(v) for v in translation]
-    param_map["NumberOfParameters"] = [str(len(translation))]
-    if "InitialTransformParametersFileName" not in param_map:
-        param_map["InitialTransformParametersFileName"] = ("NoInitialTransform",)
 
 
 def _compute_overlap_indices(

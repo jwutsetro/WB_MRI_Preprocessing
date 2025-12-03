@@ -49,7 +49,7 @@
 (HowToCombineTransforms "Compose")
 (AutomaticTransformInitialization "false")
 (AutomaticScalesEstimation "false")
-(Scales 1 1 1000)
+(Scales 1 1 10000)
 
 // *****************
 // ** Pyramid Settings
