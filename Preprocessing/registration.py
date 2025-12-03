@@ -13,31 +13,23 @@ PARAMETER_DIR = Path(__file__).resolve().parent / "parameter_files"
 
 
 def register_patient(patient_dir: Path) -> None:
-    """Run station-to-station registration driven by DWI and apply transforms to ADC and all DWI stations."""
-    registration_dir = _choose_registration_dwi_dir(patient_dir)
+    """Run station-to-station registration using DWI as moving and apply transforms to ADC."""
+    dwi_dir = _choose_dwi_dir(patient_dir)
     adc_dir = patient_dir / "ADC"
-    if registration_dir is None and not adc_dir.exists():
+    if dwi_dir is None or not dwi_dir.exists() or not adc_dir.exists():
         return
-    if registration_dir is None:
-        registration_dir = adc_dir
-    stations = _load_stations(registration_dir)
+    stations = _load_stations(dwi_dir)
     if len(stations) <= 1:
         return
     center_idx = (len(stations) - 1) // 2
     adc_index = _build_station_index(adc_dir) if adc_dir.exists() else {}
-    dwi_dirs = _bvalue_dirs(patient_dir)
-    dwi_indices = {d: _build_station_index(d) for d in dwi_dirs}
     _register_chain(
         stations[center_idx:],
         adc_index=adc_index,
-        dwi_indices=dwi_indices,
-        registration_dir=registration_dir,
     )
     _register_chain(
         list(reversed(stations[: center_idx + 1])),
         adc_index=adc_index,
-        dwi_indices=dwi_indices,
-        registration_dir=registration_dir,
     )
 
 
@@ -98,37 +90,35 @@ def _station_key(path: Path) -> str:
     return path.stem
 
 
-def _choose_registration_dwi_dir(patient_dir: Path) -> Optional[Path]:
-    dwi_dirs = _bvalue_dirs(patient_dir)
-    if dwi_dirs:
-        return dwi_dirs[0]
-    candidate = patient_dir / "dwi"
-    if candidate.is_dir():
-        return candidate
-    candidate_upper = patient_dir / "DWI"
-    if candidate_upper.is_dir():
-        return candidate_upper
+def _choose_dwi_dir(patient_dir: Path) -> Optional[Path]:
+    for name in ("dwi", "DWI"):
+        candidate = patient_dir / name
+        if candidate.is_dir():
+            return candidate
     return None
 
 
 def _register_chain(
     stations: List[Dict],
     adc_index: Optional[Dict[str, Path]] = None,
-    dwi_indices: Optional[Dict[Path, Dict[str, Path]]] = None,
-    registration_dir: Optional[Path] = None,
 ) -> None:
     if len(stations) < 2:
         return
     fixed_img = stations[0]["image"]
+    cumulative_translation = np.zeros(3, dtype=float)
     for idx, station in enumerate(stations[1:], start=1):
         moving_img = station["image"]
         overlap = _compute_overlap_indices(fixed_img, moving_img)
         if overlap is None:
             fixed_img = moving_img
+            cumulative_translation = np.zeros(3, dtype=float)
             continue
         fixed_roi, moving_roi = _extract_overlap_images(fixed_img, moving_img, overlap)
         mask = _overlap_sampling_mask(fixed_roi, moving_roi)
         param_files = ("Euler_S2S_MI.txt",)
+        initial_transform = (
+            _build_initial_transform(cumulative_translation, moving_img) if np.any(cumulative_translation) else None
+        )
         param_maps = _run_elastix(
             fixed=fixed_roi,
             moving=moving_roi,
@@ -136,16 +126,16 @@ def _register_chain(
             parameter_files=param_files,
             moving_origin=moving_img.GetOrigin(),
             output_reference=moving_img,
+            initial_transform=initial_transform,
         )
         result_reg = _apply_transformix(moving_img, param_maps)
         sitk.WriteImage(result_reg, str(station["path"]), True)
+        cumulative_translation += _translation_from_param_maps(param_maps)
         _apply_transform_to_targets(
             station_name=station.get("station", station["path"].stem),
             parameter_maps=param_maps,
             adc_index=adc_index,
-            dwi_indices=dwi_indices,
             skip_paths={station["path"]},
-            registration_dir=registration_dir,
         )
         fixed_img = result_reg
 
@@ -157,6 +147,7 @@ def _run_elastix(
     parameter_files: Sequence[str],
     moving_origin: Optional[Tuple[float, float, float]] = None,
     output_reference: Optional[sitk.Image] = None,
+    initial_transform: Optional[sitk.VectorOfParameterMap] = None,
 ) -> sitk.VectorOfParameterMap:
     elastix = sitk.ElastixImageFilter()
     elastix.LogToConsoleOn()
@@ -167,6 +158,8 @@ def _run_elastix(
     for param_map in param_list:
         params.append(param_map)
     elastix.SetParameterMap(params)
+    if initial_transform is not None and len(initial_transform) > 0:
+        elastix.SetInitialTransformParameterMap(initial_transform)
     # Some parameter sets (RandomSparseMask) require a mask; supply a full-ones mask if none provided.
     def _sampler_name(param_map: sitk.ParameterMap) -> str:
         raw = param_map["ImageSampler"][0] if "ImageSampler" in param_map else ""
@@ -285,9 +278,7 @@ def _apply_transform_to_targets(
     station_name: str,
     parameter_maps: sitk.VectorOfParameterMap,
     adc_index: Optional[Dict[str, Path]] = None,
-    dwi_indices: Optional[Dict[Path, Dict[str, Path]]] = None,
     skip_paths: Optional[set[Path]] = None,
-    registration_dir: Optional[Path] = None,
 ) -> None:
     skip_resolved = {p.resolve() for p in skip_paths} if skip_paths else set()
 
@@ -301,29 +292,6 @@ def _apply_transform_to_targets(
             moving = sitk.ReadImage(str(target))
             result = _apply_transformix(moving, parameter_maps)
             sitk.WriteImage(result, str(target), True)
-
-    if dwi_indices is not None:
-        for modality_dir, index in dwi_indices.items():
-            target = index.get(station_name)
-            if target is None or not target.exists():
-                continue
-            if registration_dir is not None and modality_dir == registration_dir and _should_skip(target):
-                continue
-            if _should_skip(target):
-                continue
-            moving = sitk.ReadImage(str(target))
-            result = _apply_transformix(moving, parameter_maps)
-            sitk.WriteImage(result, str(target), True)
-
-
-def _apply_transform_to_dwi(patient_dir: Path, station_name: str, parameter_maps: sitk.VectorOfParameterMap) -> None:
-    for modality_dir in _bvalue_dirs(patient_dir):
-        target = modality_dir / f"{station_name}.nii.gz"
-        if not target.exists():
-            continue
-        moving = sitk.ReadImage(str(target))
-        result = _apply_transformix(moving, parameter_maps)
-        sitk.WriteImage(result, str(target), True)
 
 
 def _choose_anatomical_wb(patient_dir: Path) -> Optional[Path]:
@@ -397,12 +365,6 @@ def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
     return targets
 
 
-def _bvalue_dirs(patient_dir: Path) -> List[Path]:
-    dirs = [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue(p.name)]
-    dirs.sort(key=lambda p: float(p.name))
-    return dirs
-
-
 def _load_parameter_map(filename: str) -> sitk.ParameterMap:
     path = PARAMETER_DIR / filename
     if not path.exists():
@@ -458,3 +420,32 @@ def _is_bvalue(name: str) -> bool:
 
 def _is_dwi_modality(name: str) -> bool:
     return name.lower() in {"adc", "dwi"} or _is_bvalue(name)
+
+
+def _translation_from_param_maps(param_maps: sitk.VectorOfParameterMap) -> np.ndarray:
+    for param_map in param_maps:
+        transform_name_raw = param_map.get("Transform", [""])[0]
+        transform_name = transform_name_raw.decode() if isinstance(transform_name_raw, (bytes, bytearray)) else str(transform_name_raw)
+        if transform_name.lower() != "translationtransform":
+            continue
+        params_raw = param_map.get("TransformParameters", [])
+        return np.array([float(p) for p in params_raw], dtype=float)
+    return np.zeros(3, dtype=float)
+
+
+def _build_initial_transform(translation: np.ndarray, reference: sitk.Image) -> sitk.VectorOfParameterMap:
+    param_map = sitk.ParameterMap()
+    param_map["Transform"] = ["TranslationTransform"]
+    param_map["NumberOfParameters"] = ["3"]
+    param_map["TransformParameters"] = [str(v) for v in translation]
+    param_map["InitialTransformParametersFileName"] = ["NoInitialTransform"]
+    param_map["HowToCombineTransforms"] = ["Compose"]
+    param_map["FixedImageDimension"] = ["3"]
+    param_map["MovingImageDimension"] = ["3"]
+    param_map["FixedInternalImagePixelType"] = ["float"]
+    param_map["MovingInternalImagePixelType"] = ["float"]
+    param_map["CenterOfRotationPoint"] = ["0", "0", "0"]
+    _set_output_geometry(param_map, reference, origin_override=reference.GetOrigin())
+    vec = sitk.VectorOfParameterMap()
+    vec.append(param_map)
+    return vec

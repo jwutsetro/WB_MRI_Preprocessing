@@ -81,6 +81,28 @@ def _overlap_mean(image: sitk.Image, index: Sequence[Tuple[int, int]]) -> float:
     return float(arr.mean()) if arr.size else float("nan")
 
 
+def _shared_nonzero_means(
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    idx_f: Sequence[Tuple[int, int]],
+    idx_m: Sequence[Tuple[int, int]],
+) -> Tuple[float, float, int]:
+    """Mean intensities using only voxels where both overlap arrays are non-zero."""
+    (xf0, xf1), (yf0, yf1), (zf0, zf1) = idx_f
+    (xm0, xm1), (ym0, ym1), (zm0, zm1) = idx_m
+    size_f = (xf1 - xf0, yf1 - yf0, zf1 - zf0)
+    size_m = (xm1 - xm0, ym1 - ym0, zm1 - zm0)
+    roi_f = sitk.RegionOfInterest(fixed, size=size_f, index=(xf0, yf0, zf0))
+    roi_m = sitk.RegionOfInterest(moving, size=size_m, index=(xm0, ym0, zm0))
+    arr_f = sitk.GetArrayFromImage(roi_f)
+    arr_m = sitk.GetArrayFromImage(roi_m)
+    mask = (arr_f > 0) & (arr_m > 0)
+    if not mask.any():
+        return float("nan"), float("nan"), 0
+    shared = mask.sum()
+    return float(arr_f[mask].mean()), float(arr_m[mask].mean()), int(shared)
+
+
 def check_overlap_means(patient_dir: Path) -> None:
     """Print mean intensities in overlap regions for each modality under a patient folder."""
     modalities = [p for p in patient_dir.iterdir() if p.is_dir()]
@@ -99,10 +121,14 @@ def check_overlap_means(patient_dir: Path) -> None:
             mean_moving = _overlap_mean(moving["image"], idx_m)
             diff = mean_moving - mean_fixed
             ratio = mean_moving / mean_fixed if mean_fixed not in (0, float("nan")) else float("nan")
+            nz_fixed, nz_moving, nz_count = _shared_nonzero_means(fixed["image"], moving["image"], idx_f, idx_m)
+            nz_ratio = nz_moving / nz_fixed if nz_fixed not in (0, float("nan")) else float("nan")
             print(
                 f"  {fixed['station']}->{moving['station']}: "
                 f"mean_fixed={mean_fixed:.4f}, mean_moving={mean_moving:.4f}, "
-                f"diff={diff:.4f}, ratio={ratio:.4f}"
+                f"diff={diff:.4f}, ratio={ratio:.4f}; "
+                f"nz_mean_fixed={nz_fixed:.4f}, nz_mean_moving={nz_moving:.4f}, "
+                f"nz_ratio={nz_ratio:.4f}, shared_nz_voxels={nz_count}"
             )
 
 
