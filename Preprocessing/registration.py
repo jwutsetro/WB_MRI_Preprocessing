@@ -424,11 +424,13 @@ def _is_dwi_modality(name: str) -> bool:
 
 def _translation_from_param_maps(param_maps: sitk.VectorOfParameterMap) -> np.ndarray:
     for param_map in param_maps:
-        transform_name_raw = param_map.get("Transform", [""])[0]
+        if "Transform" not in param_map:
+            continue
+        transform_name_raw = param_map["Transform"][0]
         transform_name = transform_name_raw.decode() if isinstance(transform_name_raw, (bytes, bytearray)) else str(transform_name_raw)
         if transform_name.lower() != "translationtransform":
             continue
-        params_raw = param_map.get("TransformParameters", [])
+        params_raw = param_map["TransformParameters"] if "TransformParameters" in param_map else []
         return np.array([float(p) for p in params_raw], dtype=float)
     return np.zeros(3, dtype=float)
 
