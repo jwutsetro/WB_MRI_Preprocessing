@@ -8,9 +8,29 @@ import numpy as np
 import SimpleITK as sitk
 
 
-def merge_patient(patient_dir: Path) -> None:
-    """Merge all station images for each modality into whole-body volumes with feathered overlaps, then remove station folders."""
-    modality_dirs = [d for d in patient_dir.iterdir() if d.is_dir()]
+def merge_station_folders(
+    root_dir: Path,
+    *,
+    output_dir: Optional[Path] = None,
+    remove_station_folders: bool = True,
+    output_name_suffix: str = "",
+) -> List[Path]:
+    """Merge per-station volumes into whole-body volumes for each modality folder under `root_dir`.
+
+    Expected layout:
+      - `<root_dir>/<modality>/<station>.nii.gz` (stations are numeric filenames)
+
+    Writes:
+      - `<output_dir>/<modality><output_name_suffix>.nii.gz`
+
+    This is the generic merge used by patient-level reconstruction as well as debug
+    pipelines (e.g., merging `_F2A/<bvalue>/...` or `_S2S/<bvalue>/...`).
+    """
+    out_dir = output_dir if output_dir is not None else root_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written: List[Path] = []
+    modality_dirs = [d for d in root_dir.iterdir() if d.is_dir()]
     for modality_dir in modality_dirs:
         station_files = sorted(modality_dir.glob("*.nii*"))
         if not station_files:
@@ -20,8 +40,16 @@ def merge_patient(patient_dir: Path) -> None:
             continue
         reference = _reference_image(stations)
         merged = _feather_merge(stations, reference)
-        _write_output(patient_dir, modality_dir.name, merged)
-        _safe_remove_dir(modality_dir)
+        out_path = _write_output(out_dir, f"{modality_dir.name}{output_name_suffix}", merged)
+        written.append(out_path)
+        if remove_station_folders:
+            _safe_remove_dir(modality_dir)
+    return written
+
+
+def merge_patient(patient_dir: Path) -> None:
+    """Merge all station images for each modality into whole-body volumes, then remove station folders."""
+    merge_station_folders(patient_dir, output_dir=patient_dir, remove_station_folders=True)
 
 
 def _load_stations(files: List[Path]) -> List[Dict]:
@@ -144,9 +172,10 @@ def _station_weight_image(
     return weight_img
 
 
-def _write_output(patient_dir: Path, modality: str, image: sitk.Image) -> None:
-    target_plain = patient_dir / f"{modality}.nii.gz"
+def _write_output(output_dir: Path, modality: str, image: sitk.Image) -> Path:
+    target_plain = output_dir / f"{modality}.nii.gz"
     sitk.WriteImage(image, str(target_plain), True)
+    return target_plain
 
 
 def _safe_remove_dir(path: Path) -> None:
