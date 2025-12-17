@@ -9,9 +9,9 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 - `Preprocessing/noise_bias.py`: Anisotropic diffusion + N4 bias correction utilities.
 - `Preprocessing/isis.py`: Inter-station intensity standardisation (center-out linear scaling).
 - `Preprocessing/registration.py`: ADC-driven inter-station registration using SimpleITK translation-only; transforms applied to all b-values; also registers whole-body ADC to T1.
-- `Preprocessing/pipeline.py`: Orchestrates steps, supports SLURM array sharding.
+- `Preprocessing/alignment.py`: Orchestrates alignment steps, supports SLURM array sharding.
 - `Preprocessing/nyul.py`: Lightweight Nyul model fit/apply with JSON persistence.
-- `Preprocessing/cli.py`: Entry-point (`python -m Preprocessing.cli run ...`).
+- `Preprocessing/__main__.py`: Entry-point (`python -m Preprocessing run ...`).
 
 ## Conventions
 - Orientations default to `LPS`; adjust in config if needed.
@@ -28,8 +28,8 @@ Pipeline to turn raw DICOM dumps into WB NIfTI volumes: sort/label series, conve
 
 ## Running
 - Always activate the repo virtualenv (`source venv/bin/activate`) so SimpleITK-SimpleElastix is available.
-- Full pipeline: `python -m Preprocessing.cli run --config config/pipeline.example.yaml`.
-- Sequence scan only: `python -m Preprocessing.cli scan-sequences --config ... --patient-dir ...`.
+- Full pipeline: `python -m Preprocessing run --config config/pipeline.example.yaml`.
+- Sequence scan only: `python -m Preprocessing scan-sequences --config ... --patient-dir ...`.
 - Use `--array-index/--array-size` for SLURM job arrays.
 
 ## Testing

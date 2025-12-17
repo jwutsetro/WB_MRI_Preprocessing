@@ -2,6 +2,6 @@
 
 from Preprocessing import config
 from Preprocessing.config import PipelineConfig
-from Preprocessing.pipeline import PipelineRunner
+from Preprocessing.alignment import AlignmentRunner
 
-__all__ = ["config", "PipelineConfig", "PipelineRunner"]
+__all__ = ["config", "PipelineConfig", "AlignmentRunner"]

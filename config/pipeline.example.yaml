@@ -21,8 +21,8 @@ steps:
   registration: true
   reconstruct: true
   resample_to_t1: true
-  nyul: true
 
+# Dataset-level standardisation (run separately via `python -m Preprocessing nyul --config ...`)
 nyul:
   enable: true
   bins: 120

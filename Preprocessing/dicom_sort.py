@@ -86,6 +86,40 @@ class DicomSorter:
         self.detector = SequenceDetector(cfg.sequence_rules)
         self.interactive = interactive
 
+    def scan_unknown_sequences(self, patient_dir: Path) -> List[Dict[str, str]]:
+        """Scan a patient directory and return a de-duplicated list of unknown sequences.
+
+        This does not write NIfTI outputs. It appends unknown sequences to
+        `cfg.unknown_sequence_log` (JSONL) for later curation.
+        """
+        instances = self._collect_instances(patient_dir)
+        seen: set[tuple[str, str]] = set()
+        unknown: List[Dict[str, str]] = []
+        patient_id = patient_dir.name
+        for instance in instances:
+            meta = {
+                "type_value": instance.type_value or "",
+                "b_value": instance.b_value or "",
+            }
+            meta.update(instance.metadata)
+            rule = self.detector.match(instance.series_description, meta)
+            if rule is not None:
+                continue
+            key = (instance.series_uid, instance.series_description)
+            if key in seen:
+                continue
+            seen.add(key)
+            self._log_unknown(patient=patient_id, instance=instance, metadata=meta)
+            unknown.append(
+                {
+                    "series_uid": instance.series_uid,
+                    "series_description": instance.series_description,
+                    "protocol_name": instance.protocol_name,
+                    "file": str(instance.filepath),
+                }
+            )
+        return unknown
+
     def _collect_instances(self, patient_dir: Path) -> List[DicomInstance]:
         instances: List[DicomInstance] = []
         for filepath in patient_dir.rglob("*"):

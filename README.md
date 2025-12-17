@@ -3,7 +3,7 @@
 CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorting → NIfTI conversion → ADC creation → noise/bias removal → inter-station intensity standardisation (ISIS) → functional registration → WB reconstruction → diffusion resampling to T1 → Nyul histogram standardisation. Runs locally or on SLURM job arrays.
 
 ## Layout
-- `Preprocessing/`: pipeline code (`config.py`, `dicom_sort.py`, `pipeline.py`, `nyul.py`, `cli.py`).
+- `Preprocessing/`: pipeline code (`config.py`, `dicom_sort.py`, `alignment.py`, `nyul.py`).
 - `config/pipeline.example.yaml`: editable template for paths/step toggles; DICOM sequence rules live in `dicom_config.json`.
 - `tests/`: synthetic fast tests for core utilities.
 
@@ -19,45 +19,23 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    ```
 3. Run the pipeline:
    ```bash
-   python -m Preprocessing.cli run --config config/pipeline.yaml
+   python -m Preprocessing run --config config/pipeline.yaml
    # optional SLURM sharding
-   # python -m Preprocessing.cli run --config config/pipeline.yaml --array-index 0 --array-size 8
+   # python -m Preprocessing run --config config/pipeline.yaml --array-index 0 --array-size 8
+   # run a single patient folder (useful for SLURM per-patient jobs)
+   # python -m Preprocessing run --config config/pipeline.yaml --patient-dir /path/to/patient
+   # run only a slice of the pipeline (development/debugging)
+   # python -m Preprocessing run --config config/pipeline.yaml --from-step adc --to-step reconstruct
+   # python -m Preprocessing run --config config/pipeline.yaml --steps dicom_sort,adc
    ```
 4. Scan sequences without processing (logs unknown SeriesDescriptions to `logs/unknown_sequences.jsonl`):
    ```bash
-   python -m Preprocessing.cli scan-sequences --config config/pipeline.yaml --patient-dir /path/to/patient
+   python -m Preprocessing scan-sequences --config config/pipeline.yaml --patient-dir /path/to/patient
    ```
-5. Convert DICOMs only:
-   ```bash
-   python convert_dicom.py /path/to/raw_dicoms /path/to/output \
-     --config config/pipeline.yaml
-   # or
-   python -m Preprocessing.cli convert-dicom /path/to/raw_dicoms /path/to/output --config config/pipeline.yaml
-   ```
-6. Compute ADC only (after DWI conversion):
-   ```bash
-   python compute_adc.py /path/to/output_root
-   ```
-7. Run noise/bias correction only:
-   ```bash
-   python noise_bias.py /path/to/output_root
-   ```
-8. Run inter-station intensity standardisation (ISIS) only:
-   ```bash
-   python ISIS.py /path/to/output_root
-   ```
-9. Run inter-station registration (ADC-driven, SimpleElastix) only:
-   ```bash
-   python register_stations.py /path/to/output_root
-   ```
-10. Merge stations into whole-body volumes with feathered overlaps (station folders are removed after merge):
-    ```bash
-    python merge_WB.py /path/to/output_root
-    ```
-11. Register whole-body diffusion (ADC/DWI) to anatomical only:
-    ```bash
-    python register_wb.py /path/to/output_root
-    ```
+5. Run a single step (examples):
+   - Convert only: `python -m Preprocessing run --config config/pipeline.yaml --steps dicom_sort`
+   - ADC only: `python -m Preprocessing run --config config/pipeline.yaml --steps adc`
+   - Merge only: `python -m Preprocessing run --config config/pipeline.yaml --steps reconstruct`
 
 ### SimpleElastix (registration)
 - Recommended: install the PyPI build that bundles Elastix/SimpleITK: `pip install SimpleITK-SimpleElastix`.
@@ -86,5 +64,6 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 - Inter-station registration uses ADC station overlaps with SimpleElastix parameter maps (`Preprocessing/parameter_files`) and applies transforms to all DWI stations from the center outward.
 - Station merges use feathered linear blending across overlaps to avoid seams between stations; station folders are cleaned up post-merge.
 - Whole-body DWI-to-anatomical registration uses the same Elastix parameter maps (Euler + B-spline) and updates all DWI WB volumes to the anatomical WB space.
-- Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists.
+- Nyul models are stored under `models/` and recomputed when `nyul.refresh` is true or no model exists; run it as a dedicated command after all patients are processed:
+  `python -m Preprocessing nyul --config config/pipeline.yaml --mode fit-apply`.
 - Tests use synthetic data only: `pytest`.

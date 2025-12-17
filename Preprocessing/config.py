@@ -65,12 +65,12 @@ class StepConfig:
     registration: bool = True
     reconstruct: bool = True
     resample_to_t1: bool = True
-    nyul: bool = True
 
     @classmethod
     def from_dict(cls, data: Dict) -> "StepConfig":
         default = cls()
-        merged = {**default.__dict__, **(data or {})}
+        allowed = {k: v for k, v in (data or {}).items() if k in default.__dict__}
+        merged = {**default.__dict__, **allowed}
         return cls(**merged)
 
 

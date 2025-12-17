@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 import SimpleITK as sitk
@@ -88,7 +88,45 @@ def save_model(model: NyulModel, path: Path) -> None:
 
 
 def load_model(path: Path) -> NyulModel:
+    """Load a Nyul histogram standardisation model from disk."""
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     return NyulModel.from_dict(data)
 
+
+def nyul_collect_modality_files(output_root: Path, modality: str) -> List[Path]:
+    """Collect whole-body NIfTI files for a modality under an output root."""
+    files = sorted(output_root.glob(f"*/{modality}.nii.gz"))
+    if files:
+        return files
+    return sorted(output_root.glob(f"*/*{modality}_WB.nii.gz"))
+
+
+def nyul_ensure_models(output_root: Path, cfg: NyulConfig) -> None:
+    """Ensure Nyul models exist (fit if missing or refresh is enabled)."""
+    model_dir = cfg.model_dir
+    model_dir.mkdir(parents=True, exist_ok=True)
+    for modality in cfg.modalities:
+        modality_files = nyul_collect_modality_files(output_root, modality)
+        if not modality_files:
+            continue
+        model_path = model_dir / f"{modality}_nyul.json"
+        if not cfg.refresh and model_path.exists():
+            continue
+        images: List[sitk.Image] = [sitk.ReadImage(str(path)) for path in modality_files]
+        model = fit_nyul_model(modality, images, cfg)
+        save_model(model, model_path)
+
+
+def nyul_apply_models(output_root: Path, cfg: NyulConfig) -> None:
+    """Apply existing Nyul models to all matching whole-body outputs."""
+    for modality in cfg.modalities:
+        model_path = cfg.model_dir / f"{modality}_nyul.json"
+        if not model_path.exists():
+            continue
+        model = load_model(model_path)
+        modality_files = nyul_collect_modality_files(output_root, modality)
+        for path in modality_files:
+            img = sitk.ReadImage(str(path))
+            out = model.apply(img)
+            sitk.WriteImage(out, str(path), True)
