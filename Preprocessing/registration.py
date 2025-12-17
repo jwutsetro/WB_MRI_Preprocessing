@@ -95,6 +95,7 @@ def _estimate_rigid_transform_fixed_to_moving(
 
     Returns a transform suitable for `sitk.Resample(moving, fixed, transform, ...)`.
     """
+    identity = sitk.Euler3DTransform()
     fixed_ds = _prepare_for_registration(fixed, target_spacing_mm=target_spacing_mm)
     moving_ds = _prepare_for_registration(moving, target_spacing_mm=target_spacing_mm)
     fixed_mask = _foreground_mask(fixed_ds)
@@ -124,8 +125,6 @@ def _estimate_rigid_transform_fixed_to_moving(
     registration.SetSmoothingSigmasPerLevel([2, 1, 0])
     registration.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
     registration.SetInitialTransform(initial, inPlace=False)
-
-    identity = sitk.Transform(3, sitk.sitkIdentity)
     try:
         final = registration.Execute(fixed_ds, moving_ds)
     except Exception as exc:
@@ -165,6 +164,9 @@ def _estimate_rigid_transform_fixed_to_moving(
         candidates=candidates,
         min_eval_voxels=min_eval_voxels,
     )
+
+    # Enforce a rigid (rotation+translation) transform type for downstream resampling.
+    best_transform = _as_euler3d_transform(best_transform)
 
     if best_name != "identity":
         translation_mm, rotation_deg = _rigid_motion_magnitude(best_transform)
@@ -271,6 +273,8 @@ def _rigid_motion_magnitude(transform: sitk.Transform) -> Tuple[float, float]:
     if isinstance(t, sitk.CompositeTransform) and t.GetNumberOfTransforms() > 0:
         t = t.GetBackTransform()
     params = list(t.GetParameters())
+    if len(params) == 0:
+        return 0.0, 0.0
     if len(params) == 3:
         translation = np.array(params, dtype=float)
         return float(np.linalg.norm(translation)), 0.0
@@ -280,6 +284,32 @@ def _rigid_motion_magnitude(transform: sitk.Transform) -> Tuple[float, float]:
         rotation_deg = float(np.max(np.abs(rotation_rad)) * 180.0 / math.pi)
         return float(np.linalg.norm(translation)), rotation_deg
     return float("inf"), float("inf")
+
+
+def _as_euler3d_transform(transform: sitk.Transform) -> sitk.Euler3DTransform:
+    """Coerce a transform into a rigid Euler3D (rotation+translation) transform.
+
+    This ensures the ADC→T1 whole-body registration stays strictly rigid (no scale/shear/deform).
+    """
+    t = transform
+    if isinstance(t, sitk.CompositeTransform) and t.GetNumberOfTransforms() > 0:
+        t = t.GetBackTransform()
+    params = list(t.GetParameters())
+    out = sitk.Euler3DTransform()
+    if hasattr(t, "GetCenter"):
+        try:
+            out.SetCenter(t.GetCenter())
+        except Exception:
+            pass
+    if len(params) == 6:
+        out.SetParameters(params)
+        return out
+    if len(params) == 3:
+        out.SetParameters([0.0, 0.0, 0.0, float(params[0]), float(params[1]), float(params[2])])
+        return out
+    # Identity fallback.
+    out.SetParameters([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    return out
 
 
 def _resample_to_reference(*, moving: sitk.Image, reference: sitk.Image, transform: sitk.Transform) -> sitk.Image:
