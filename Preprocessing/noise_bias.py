@@ -57,8 +57,34 @@ def estimate_log_bias_field_n4(
     n4 = sitk.N4BiasFieldCorrectionImageFilter()
     n4.SetMaximumNumberOfIterations([int(v) for v in max_iterations])
     n4.SetConvergenceThreshold(float(convergence_threshold))
-    _ = n4.Execute(image_small, mask_small)
-    log_field = n4.GetLogBiasFieldAsImage(image_f)
+    corrected_small = n4.Execute(image_small, mask_small)
+
+    # SimpleITK wheels vary: some expose GetLogBiasFieldAsImage, others don't.
+    try:
+        getter = getattr(n4, "GetLogBiasFieldAsImage")
+    except AttributeError:
+        getter = None
+
+    if getter is not None:
+        log_field = getter(image_f)
+        log_field.CopyInformation(image_f)
+        return log_field
+
+    # Fallback: derive log-field from (input / corrected) on the resolution N4 ran on, then resample.
+    corrected_safe = sitk.Add(sitk.Cast(corrected_small, sitk.sitkFloat32), 1e-6)
+    image_small_f = sitk.Cast(image_small, sitk.sitkFloat32)
+    ratio = sitk.Divide(image_small_f, corrected_safe)
+    log_field_small = sitk.Log(ratio)
+    log_field_small = sitk.Multiply(log_field_small, sitk.Cast(mask_small, sitk.sitkFloat32))
+    log_field_small.CopyInformation(image_small)
+
+    if shrink_factor > 1:
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(image_f)
+        resampler.SetInterpolator(sitk.sitkLinear)
+        log_field = resampler.Execute(log_field_small)
+    else:
+        log_field = log_field_small
     log_field.CopyInformation(image_f)
     return log_field
 
