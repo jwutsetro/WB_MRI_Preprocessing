@@ -18,8 +18,8 @@ from Preprocessing.merge_wb import merge_patient
 
 ALIGNMENT_STEP_ORDER: List[str] = [
     "dicom_sort",
-    "adc",
     "noise_bias",
+    "adc",
     "registration",
     "isis",
     "reconstruct",
@@ -149,10 +149,10 @@ class AlignmentRunner:
         if self.cfg.steps.dicom_sort:
             sorter = DicomSorter(self.cfg, interactive=self.interactive)
             written = sorter.sort_and_convert(patient_input, patient_output)
-        if self.cfg.steps.adc:
-            self._run_adc(patient_output)
         if self.cfg.steps.noise_bias:
             self._run_bias(patient_output)
+        if self.cfg.steps.adc:
+            self._run_adc(patient_output)
         if self.cfg.steps.registration:
             self._run_registration(patient_output)
         if self.cfg.steps.isis:
@@ -166,7 +166,7 @@ class AlignmentRunner:
         compute_adc_for_patient(patient_output)
 
     def _run_bias(self, patient_output: Path) -> None:
-        run_noise_bias(patient_output)
+        run_noise_bias(patient_output, cfg=self.cfg.noise_bias)
 
     def _run_isis(self, patient_output: Path) -> None:
         standardize_patient(patient_output)

@@ -128,6 +128,8 @@ def standardize_patient(patient_dir: Path, skip_modalities: Iterable[str] = ("AD
     """Apply inter-station intensity standardisation per modality for a patient."""
     skip_set = {m.lower() for m in skip_modalities}
     for mod_dir in sorted([p for p in patient_dir.iterdir() if p.is_dir()]):
+        if mod_dir.name.startswith("_"):
+            continue
         if mod_dir.name.lower() in skip_set:
             continue
         _standardize_modality(mod_dir)

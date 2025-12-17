@@ -1,6 +1,6 @@
 # WB MRI Preprocessing
 
-CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorting → NIfTI conversion → ADC creation → noise/bias removal → inter-station intensity standardisation (ISIS) → functional registration → WB reconstruction → diffusion resampling to T1 → Nyul histogram standardisation. Runs locally or on SLURM job arrays.
+CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorting → NIfTI conversion → bias correction/body masking → ADC creation → inter-station intensity standardisation (ISIS) → functional registration → WB reconstruction → diffusion resampling to T1 → Nyul histogram standardisation. Runs locally or on SLURM job arrays.
 
 ## Layout
 - `Preprocessing/`: pipeline code (`config.py`, `dicom_sort.py`, `alignment.py`, `nyul.py`).
@@ -59,6 +59,7 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
 - Known sequence names are defined in `dicom_config.json` (e.g., T1, DWI, Dixon_IP/OP/W/F). Update this file to add new sequences.
 - New/renamed sequences are logged; run with `--interactive` to map them on the fly.
 - All outputs are oriented to `LPS` by default; change `target_orientation` in the config if required.
+- Bias correction uses N4 with an explicit body mask (no denoising/smoothing is written back). For DWI, the bias field is estimated from the lowest-b (typically b0) volume per station and applied to all b-values; body masks are saved under `output_dir/<patient>/_masks/`.
 - ADC computation fits log(S) vs b across all b-values (preferring >0), masks low-signal background (<0.01), zeros pure noise (>5.0), and scales by 1000.
 - ISIS scales stations linearly from the center outward so overlap regions share the same mean intensity (per modality; ADC is skipped).
 - Inter-station registration uses ADC station overlaps with SimpleElastix parameter maps (`Preprocessing/parameter_files`) and applies transforms to all DWI stations from the center outward.

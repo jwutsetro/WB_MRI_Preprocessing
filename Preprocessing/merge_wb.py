@@ -10,7 +10,7 @@ import SimpleITK as sitk
 
 def merge_patient(patient_dir: Path) -> None:
     """Merge all station images for each modality into whole-body volumes with feathered overlaps, then remove station folders."""
-    modality_dirs = [d for d in patient_dir.iterdir() if d.is_dir()]
+    modality_dirs = [d for d in patient_dir.iterdir() if d.is_dir() and not d.name.startswith("_")]
     for modality_dir in modality_dirs:
         station_files = sorted(modality_dir.glob("*.nii*"))
         if not station_files:

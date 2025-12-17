@@ -148,6 +148,43 @@ class NyulConfig:
 
 
 @dataclass
+class NoiseBiasConfig:
+    """Configuration for bias-field correction and body masking.
+
+    Notes:
+    - Bias correction uses N4 with an explicit body mask (no denoising/smoothing is written back).
+    - For DWI, bias is estimated from the lowest-b (typically b0) volume per station and applied to all b-values.
+    """
+
+    apply_to_anatomical: bool = True
+    apply_to_dwi: bool = True
+    dwi_reference: str = "lowest_b"  # "lowest_b" or "b0"
+    save_masks: bool = True
+    mask_dir_name: str = "_masks"
+    apply_body_mask: bool = True
+
+    mask_smoothing_sigma: float = 1.0
+    mask_closing_radius: int = 1
+    mask_dilation_radius: int = 1
+
+    n4_shrink_factor_anatomical: int = 2
+    n4_shrink_factor_dwi: int = 4
+    n4_max_iterations: List[int] = field(default_factory=lambda: [50, 50, 30, 20])
+    n4_convergence_threshold: float = 1e-4
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "NoiseBiasConfig":
+        defaults = cls()
+        if data is None:
+            return defaults
+        if not isinstance(data, dict):
+            raise TypeError("noise_bias must be a mapping.")
+        merged = {**defaults.__dict__, **(data or {})}
+        merged["n4_max_iterations"] = list(merged.get("n4_max_iterations", defaults.n4_max_iterations))
+        return cls(**merged)
+
+
+@dataclass
 class PipelineConfig:
     """Top-level configuration for the preprocessing pipeline."""
 
@@ -159,6 +196,7 @@ class PipelineConfig:
     dicom_rules_path: Path = Path("dicom_config.json")
     sequence_rules: List[SequenceRule] = field(default_factory=list)
     steps: StepConfig = field(default_factory=StepConfig)
+    noise_bias: NoiseBiasConfig = field(default_factory=NoiseBiasConfig)
     nyul: NyulConfig = field(default_factory=NyulConfig)
 
     @classmethod
@@ -168,6 +206,7 @@ class PipelineConfig:
         rules_path = Path(data.get("dicom_rules_path", "dicom_config.json"))
         rules = _load_sequence_rules(rules_path, data.get("sequences", []))
         steps = StepConfig.from_dict(data.get("steps", {}))
+        noise_bias_cfg = NoiseBiasConfig.from_dict(data.get("noise_bias", {}))
         nyul_cfg = NyulConfig.from_dict(data.get("nyul", {}))
         if "station_labels" in (data or {}):
             print("[config] 'station_labels' is deprecated and ignored (stations are numeric).")
@@ -180,6 +219,7 @@ class PipelineConfig:
             dicom_rules_path=rules_path,
             sequence_rules=rules,
             steps=steps,
+            noise_bias=noise_bias_cfg,
             nyul=nyul_cfg,
         )
 

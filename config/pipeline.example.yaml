@@ -10,10 +10,32 @@ steps:
   dicom_sort: true
   adc: true
   noise_bias: true
-  isis: true
+  isis: false
   registration: false
   reconstruct: false
   resample_to_t1: false
+
+# Bias correction + body masking
+noise_bias:
+  # Anatomical: per-volume N4 bias correction with an explicit body mask.
+  apply_to_anatomical: true
+  # DWI: estimate bias from the lowest-b (typically b0) volume per station and apply to all b-values.
+  apply_to_dwi: true
+  dwi_reference: lowest_b  # or "b0" (only if a b=0 directory exists)
+  save_masks: true
+  mask_dir_name: _masks
+  apply_body_mask: true
+
+  # Mask construction (used for N4 + optional background zeroing).
+  mask_smoothing_sigma: 1.0
+  mask_closing_radius: 1
+  mask_dilation_radius: 1
+
+  # N4 settings; shrink factors trade a little accuracy for big speedups.
+  n4_shrink_factor_anatomical: 2
+  n4_shrink_factor_dwi: 4
+  n4_max_iterations: [50, 50, 30, 20]
+  n4_convergence_threshold: 1.0e-4
 
 # Dataset-level standardisation (run separately via `python -m Preprocessing nyul --config ...`)
 nyul:
