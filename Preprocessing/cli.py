@@ -43,7 +43,10 @@ def parse_args() -> argparse.Namespace:
     recon_p.add_argument("--modality", default="T1", help="Anatomical modality folder to merge (default: T1).")
     recon_p.add_argument("--keep-stations", action="store_true", help="Keep the station folder after writing the WB volume.")
 
-    f2a_p = sub.add_parser("register-f2a", help="Register DWI stations to anatomical WB using ADC driver (rigid)")
+    f2a_p = sub.add_parser(
+        "register-f2a",
+        help="Register DWI stations to anatomical WB using ADC driver (translation-only)",
+    )
     f2a_scope = f2a_p.add_mutually_exclusive_group(required=True)
     f2a_scope.add_argument("--patient-dir", type=Path, help="Single patient output folder.")
     f2a_scope.add_argument("--root-dir", type=Path, help="Root directory containing patient output folders.")

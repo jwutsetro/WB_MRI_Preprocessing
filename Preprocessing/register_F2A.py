@@ -56,9 +56,9 @@ def register_functional_to_anatomical(
     t1_body_threshold: float = 20.0,
     adc_body_threshold: float = 1.0,
 ) -> Path:
-    """Register per-station DWI volumes to the whole-body anatomical image (rigid).
+    """Register per-station DWI volumes to the whole-body anatomical image (translation-only).
 
-    Uses `ADC` stations to estimate rigid transforms to the anatomical WB image and
+    Uses `ADC` stations to estimate translation transforms to the anatomical WB image and
     applies the same transform to other DWI b-values (station-matched) when present.
 
     Output layout mirrors the input DWI layout (`<bvalue>/<station>.nii.gz`).
@@ -99,7 +99,7 @@ def register_functional_to_anatomical(
             fixed=fixed_roi,
             moving=moving_roi,
             mask=mask,
-            parameter_files=("F2A_Translation_MI.txt", "F2A_Euler_MI.txt"),
+            parameter_files=("F2A_Translation_MI.txt",),
             # The ROI is used for metric computation; resampling is handled explicitly
             # to ensure correct fixed-space geometry.
             output_reference=moving_adc,
