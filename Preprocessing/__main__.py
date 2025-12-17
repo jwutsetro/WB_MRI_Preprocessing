@@ -9,8 +9,7 @@ from Preprocessing.nyul import nyul_apply_models, nyul_ensure_models
 from Preprocessing.alignment import (
     ALIGNMENT_STEP_ORDER,
     AlignmentRunner,
-    pipeline_apply_step_selection,
-    pipeline_select_steps,
+    pipeline_apply_cli_step_overrides,
 )
 
 
@@ -65,8 +64,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     only_steps = None
     if args.steps:
         only_steps = [s for s in args.steps.split(",")]
-    selected = pipeline_select_steps(only=only_steps, from_step=args.from_step, to_step=args.to_step)
-    pipeline_apply_step_selection(cfg, selected)
+    pipeline_apply_cli_step_overrides(cfg, only=only_steps, from_step=args.from_step, to_step=args.to_step)
     runner = AlignmentRunner(
         cfg=cfg,
         interactive=args.interactive,

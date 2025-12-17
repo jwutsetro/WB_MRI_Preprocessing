@@ -3,20 +3,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 
-DEFAULT_STATION_LABELS: List[str] = [
-    "head",
-    "torso",
-    "pelvis",
-    "legs",
-    "lower_legs",
-    "upper_feet",
-    "feet",
-]
+STEP_ALIASES: Dict[str, str] = {
+    "dicom_reconstruction": "dicom_sort",
+    "dicom_reconstruct": "dicom_sort",
+    "dicom_convert": "dicom_sort",
+    "adc_creation": "adc",
+    "create_adc": "adc",
+    "noise_bias_removal": "noise_bias",
+    "bias_correction": "noise_bias",
+    "n4_bias": "noise_bias",
+    "isis_standardisation": "isis",
+    "isis_standardization": "isis",
+    "wb_reconstruct": "reconstruct",
+    "wb_merge": "reconstruct",
+    "merge_wb": "reconstruct",
+    "resample": "resample_to_t1",
+    "dwi_to_t1": "resample_to_t1",
+}
 
 
 @dataclass
@@ -67,11 +75,57 @@ class StepConfig:
     resample_to_t1: bool = True
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "StepConfig":
+    def from_dict(cls, data: Any) -> "StepConfig":
+        """Parse step toggles from YAML.
+
+        Accepts:
+        - mapping: `{dicom_sort: true, registration: false, ...}`
+        - list/tuple: `['dicom_sort', 'adc']` meaning "only these steps"
+        - string: `'dicom_sort,adc'` meaning "only these steps"
+
+        Legacy step names are supported via aliases.
+        """
         default = cls()
-        allowed = {k: v for k, v in (data or {}).items() if k in default.__dict__}
-        merged = {**default.__dict__, **allowed}
-        return cls(**merged)
+        step_keys = set(default.__dict__.keys())
+
+        def normalize_step_name(name: str) -> str:
+            raw = name.strip()
+            return STEP_ALIASES.get(raw, raw)
+
+        if data is None:
+            return default
+
+        if isinstance(data, str):
+            selected = {normalize_step_name(s) for s in data.split(",") if s.strip()}
+            merged = {k: False for k in step_keys}
+            for step in selected:
+                if step in step_keys:
+                    merged[step] = True
+                else:
+                    print(f"[config] Ignoring unknown step '{step}' in steps string.")
+            return cls(**merged)
+
+        if isinstance(data, (list, tuple)):
+            selected = {normalize_step_name(str(s)) for s in data if str(s).strip()}
+            merged = {k: False for k in step_keys}
+            for step in selected:
+                if step in step_keys:
+                    merged[step] = True
+                else:
+                    print(f"[config] Ignoring unknown step '{step}' in steps list.")
+            return cls(**merged)
+
+        if isinstance(data, dict):
+            merged = dict(default.__dict__)
+            for raw_key, value in (data or {}).items():
+                key = normalize_step_name(str(raw_key))
+                if key not in step_keys:
+                    print(f"[config] Ignoring unknown step toggle '{raw_key}'.")
+                    continue
+                merged[key] = bool(value)
+            return cls(**merged)
+
+        raise TypeError("steps must be a mapping, list, or comma-separated string.")
 
 
 @dataclass
@@ -101,7 +155,6 @@ class PipelineConfig:
     output_dir: Path
     working_dir: Path = Path("work")
     target_orientation: str = "LPS"
-    station_labels: List[str] = field(default_factory=lambda: DEFAULT_STATION_LABELS.copy())
     unknown_sequence_log: Path = Path("logs/unknown_sequences.jsonl")
     dicom_rules_path: Path = Path("dicom_config.json")
     sequence_rules: List[SequenceRule] = field(default_factory=list)
@@ -116,13 +169,13 @@ class PipelineConfig:
         rules = _load_sequence_rules(rules_path, data.get("sequences", []))
         steps = StepConfig.from_dict(data.get("steps", {}))
         nyul_cfg = NyulConfig.from_dict(data.get("nyul", {}))
-        station_labels = data.get("station_labels", DEFAULT_STATION_LABELS)
+        if "station_labels" in (data or {}):
+            print("[config] 'station_labels' is deprecated and ignored (stations are numeric).")
         return cls(
             input_dir=Path(data["input_dir"]),
             output_dir=Path(data["output_dir"]),
             working_dir=Path(data.get("working_dir", "work")),
             target_orientation=data.get("target_orientation", "LPS"),
-            station_labels=station_labels,
             unknown_sequence_log=Path(data.get("unknown_sequence_log", "logs/unknown_sequences.jsonl")),
             dicom_rules_path=rules_path,
             sequence_rules=rules,

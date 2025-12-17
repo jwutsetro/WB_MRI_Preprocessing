@@ -2,25 +2,18 @@ input_dir: /path/to/raw_dicoms
 output_dir: /path/to/processed
 working_dir: work
 target_orientation: LPS
-station_labels:
-  - head
-  - torso
-  - pelvis
-  - legs
-  - lower_legs
-  - upper_feet
-  - feet
 
 dicom_rules_path: dicom_config.json
 
 steps:
+  # You can also set `steps: [dicom_sort, adc, noise_bias, isis]` to mean "only these steps".
   dicom_sort: true
   adc: true
   noise_bias: true
   isis: true
-  registration: true
-  reconstruct: true
-  resample_to_t1: true
+  registration: false
+  reconstruct: false
+  resample_to_t1: false
 
 # Dataset-level standardisation (run separately via `python -m Preprocessing nyul --config ...`)
 nyul:

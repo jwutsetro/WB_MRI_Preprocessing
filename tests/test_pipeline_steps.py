@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from Preprocessing.config import NyulConfig, PipelineConfig, StepConfig
-from Preprocessing.alignment import pipeline_apply_step_selection, pipeline_select_steps
+from Preprocessing.alignment import pipeline_apply_cli_step_overrides, pipeline_apply_step_selection, pipeline_select_steps
 
 
 def _cfg(tmp_path: Path) -> PipelineConfig:
@@ -38,6 +38,15 @@ def test_pipeline_apply_step_selection(tmp_path: Path) -> None:
     assert cfg.steps.adc is True
     assert cfg.steps.reconstruct is True
     assert cfg.steps.dicom_sort is False
+
+
+def test_pipeline_cli_overrides_noop_when_unset(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.steps.registration = False
+    cfg.steps.reconstruct = False
+    pipeline_apply_cli_step_overrides(cfg, only=None, from_step=None, to_step=None)
+    assert cfg.steps.registration is False
+    assert cfg.steps.reconstruct is False
 
 
 def test_pipeline_select_steps_invalid_range() -> None:

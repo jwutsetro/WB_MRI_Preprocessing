@@ -7,7 +7,7 @@ import numpy as np
 import SimpleITK as sitk
 from tqdm import tqdm
 
-from Preprocessing.config import PipelineConfig
+from Preprocessing.config import PipelineConfig, STEP_ALIASES
 from Preprocessing.adc import compute_adc_for_patient
 from Preprocessing.dicom_sort import DicomSorter
 from Preprocessing.noise_bias import process_patient as run_noise_bias
@@ -37,6 +37,9 @@ def pipeline_select_steps(
 
     Exactly one of (only) or (from_step/to_step) may be provided.
     """
+    def _norm(name: str) -> str:
+        return STEP_ALIASES.get(name.strip(), name.strip())
+
     order = list(ALIGNMENT_STEP_ORDER)
     known = set(order)
 
@@ -44,7 +47,7 @@ def pipeline_select_steps(
         raise ValueError("Use either `only` or `from_step/to_step`, not both.")
 
     if only:
-        selected = {s.strip() for s in only if s.strip()}
+        selected = {_norm(s) for s in only if s.strip()}
         unknown = sorted(selected - known)
         if unknown:
             raise ValueError(f"Unknown step(s): {unknown}. Known steps: {order}")
@@ -53,8 +56,8 @@ def pipeline_select_steps(
     if from_step is None and to_step is None:
         return known
 
-    start = from_step or order[0]
-    end = to_step or order[-1]
+    start = _norm(from_step) if from_step is not None else order[0]
+    end = _norm(to_step) if to_step is not None else order[-1]
     if start not in known:
         raise ValueError(f"Unknown from_step: {start}. Known steps: {order}")
     if end not in known:
@@ -75,6 +78,24 @@ def pipeline_apply_step_selection(cfg: PipelineConfig, selected_steps: set[str])
     cfg.steps.isis = "isis" in selected_steps
     cfg.steps.reconstruct = "reconstruct" in selected_steps
     cfg.steps.resample_to_t1 = "resample_to_t1" in selected_steps
+
+
+def pipeline_apply_cli_step_overrides(
+    cfg: PipelineConfig,
+    *,
+    only: Sequence[str] | None = None,
+    from_step: str | None = None,
+    to_step: str | None = None,
+) -> None:
+    """Apply CLI step-selection overrides onto a loaded config.
+
+    When no CLI step-selection arguments are provided, this leaves `cfg.steps`
+    unchanged so YAML `steps:` toggles remain the source of truth.
+    """
+    if not only and from_step is None and to_step is None:
+        return
+    selected = pipeline_select_steps(only=only, from_step=from_step, to_step=to_step)
+    pipeline_apply_step_selection(cfg, selected)
 
 
 def chunk_by_array_index(items: Sequence[Path], array_index: int | None, array_size: int | None) -> List[Path]:
