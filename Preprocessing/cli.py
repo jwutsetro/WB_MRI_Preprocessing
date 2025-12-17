@@ -43,23 +43,27 @@ def parse_args() -> argparse.Namespace:
     recon_p.add_argument("--modality", default="T1", help="Anatomical modality folder to merge (default: T1).")
     recon_p.add_argument("--keep-stations", action="store_true", help="Keep the station folder after writing the WB volume.")
 
-    f2a_p = sub.add_parser("register-f2a", help="Register DWI stations to anatomical WB using b1000 (rigid)")
+    f2a_p = sub.add_parser("register-f2a", help="Register DWI stations to anatomical WB using ADC driver (rigid)")
     f2a_scope = f2a_p.add_mutually_exclusive_group(required=True)
     f2a_scope.add_argument("--patient-dir", type=Path, help="Single patient output folder.")
     f2a_scope.add_argument("--root-dir", type=Path, help="Root directory containing patient output folders.")
     f2a_p.add_argument("--b-value", default="1000", help="Reference DWI b-value directory name (default: 1000).")
     f2a_p.add_argument("--anatomical-wb", type=Path, default=None, help="Path to anatomical WB image (default: <patient>/T1.nii.gz).")
     f2a_p.add_argument("--output-subdir", default="_F2A", help="Output subdirectory under patient folder (default: _F2A).")
-    f2a_p.add_argument("--only-b1000", action="store_true", help="Only write b1000 outputs (do not propagate to other b-values).")
+    f2a_p.add_argument("--only-b1000", action="store_true", help="Only write a single b-value (use --b-value) instead of all b-values.")
+    f2a_p.add_argument("--t1-threshold", type=float, default=20.0, help="Fixed (T1) body threshold for sampling mask (default: 20).")
+    f2a_p.add_argument("--adc-threshold", type=float, default=1.0, help="Moving (ADC) body threshold for sampling mask (default: 1).")
 
-    s2s_p = sub.add_parser("register-s2s", help="Register DWI stations to each other using b1000 overlap-only strategy")
+    s2s_p = sub.add_parser("register-s2s", help="Register DWI stations to each other using ADC overlap-only strategy")
     s2s_scope = s2s_p.add_mutually_exclusive_group(required=True)
     s2s_scope.add_argument("--patient-dir", type=Path, help="Single patient output folder.")
     s2s_scope.add_argument("--root-dir", type=Path, help="Root directory containing patient output folders.")
     s2s_p.add_argument("--b-value", default="1000", help="Reference DWI b-value directory name (default: 1000).")
     s2s_p.add_argument("--input-subdir", default="_F2A", help="Input subdirectory under patient folder (default: _F2A).")
     s2s_p.add_argument("--output-subdir", default="_S2S", help="Output subdirectory under patient folder (default: _S2S).")
-    s2s_p.add_argument("--only-b1000", action="store_true", help="Only write b1000 outputs (do not propagate to other b-values).")
+    s2s_p.add_argument("--only-b1000", action="store_true", help="Only write a single b-value (use --b-value) instead of all b-values.")
+    s2s_p.add_argument("--driver-modality", default="ADC", help="Driver series directory name under input (default: ADC).")
+    s2s_p.add_argument("--adc-threshold", type=float, default=1.0, help="ADC body threshold for sampling mask (default: 1).")
 
     merge_p = sub.add_parser("merge-wb", help="Generic merge: merge station folders into WB volumes")
     merge_scope = merge_p.add_mutually_exclusive_group(required=True)
@@ -128,6 +132,8 @@ def cmd_register_f2a(args: argparse.Namespace) -> None:
             anatomical_wb=args.anatomical_wb,
             output_dir=args.patient_dir / args.output_subdir,
             apply_to_all_bvalues=not args.only_b1000,
+            t1_body_threshold=args.t1_threshold,
+            adc_body_threshold=args.adc_threshold,
         )
         print(f"[register-f2a] Wrote {out}")
         return
@@ -136,6 +142,8 @@ def cmd_register_f2a(args: argparse.Namespace) -> None:
         b_value=args.b_value,
         output_subdir=args.output_subdir,
         apply_to_all_bvalues=not args.only_b1000,
+        t1_body_threshold=args.t1_threshold,
+        adc_body_threshold=args.adc_threshold,
     )
 
 
@@ -144,18 +152,22 @@ def cmd_register_s2s(args: argparse.Namespace) -> None:
         out = register_station_to_station(
             args.patient_dir,
             b_value=args.b_value,
+            driver_modality=args.driver_modality,
             input_dir=args.patient_dir / args.input_subdir,
             output_dir=args.patient_dir / args.output_subdir,
             apply_to_all_bvalues=not args.only_b1000,
+            adc_body_threshold=args.adc_threshold,
         )
         print(f"[register-s2s] Wrote {out}")
         return
     register_station_to_station_for_root(
         args.root_dir,
         b_value=args.b_value,
+        driver_modality=args.driver_modality,
         input_subdir=args.input_subdir,
         output_subdir=args.output_subdir,
         apply_to_all_bvalues=not args.only_b1000,
+        adc_body_threshold=args.adc_threshold,
     )
 
 def cmd_merge_wb(args: argparse.Namespace) -> None:

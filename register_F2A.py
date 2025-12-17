@@ -2,8 +2,8 @@
 """
 Register DWI stations to the whole-body anatomical image (functional-to-anatomical, F2A).
 
-Uses b1000 as the reference sequence for estimating transforms and applies the same
-transform to other DWI b-values when present.
+Uses ADC as the driver for estimating transforms and applies the same transform to
+other DWI b-values when present.
 
 Usage:
     python register_F2A.py /path/to/output_root
@@ -34,4 +34,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

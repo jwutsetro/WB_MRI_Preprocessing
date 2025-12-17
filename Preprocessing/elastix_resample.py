@@ -44,6 +44,18 @@ def transform_from_elastix_parameter_map(param_map: sitk.ParameterMap) -> sitk.T
     raise NotImplementedError(f"Unsupported elastix transform: {name!r}")
 
 
+def transform_from_elastix_parameter_maps(param_maps: sitk.VectorOfParameterMap) -> sitk.Transform:
+    """Convert a sequence of elastix parameter maps to a single composed SimpleITK transform.
+
+    The returned transform maps points from output/reference space to input/moving space,
+    matching what `sitk.Resample(..., transform)` expects.
+    """
+    composite = sitk.CompositeTransform(3)
+    for param_map in param_maps:
+        composite.AddTransform(transform_from_elastix_parameter_map(param_map))
+    return composite
+
+
 def build_cropped_reference_in_fixed_space(
     fixed_space: sitk.Image,
     moving_image: sitk.Image,

@@ -2,8 +2,8 @@
 """
 Register DWI stations to each other based on overlap (station-to-station, S2S).
 
-Uses b1000 as the reference sequence for estimating transforms and applies the same
-transform to other DWI b-values when present.
+Uses ADC as the driver for estimating transforms and applies the same transform to
+other DWI b-values when present.
 
 Usage:
     python register_S2S.py /path/to/output_root
@@ -36,4 +36,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

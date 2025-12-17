@@ -50,20 +50,22 @@ CLI-first preprocessing pipeline for whole-body MRI datasets. Steps: DICOM sorti
    ```bash
    python register_stations.py /path/to/output_root
    ```
-9b. Debug registration (functional-to-anatomical, b1000-driven):
+9b. Debug registration (functional-to-anatomical, ADC-driven):
     ```bash
+    # 0) Compute ADC stations (required for the debug registration driver)
+    python compute_adc.py /path/to/output_root
     # 1) Reconstruct anatomical WB first (writes <patient>/T1.nii.gz)
     python reconstruct_anatomical.py /path/to/output_root
-    # 2) Register DWI stations to anatomical WB (writes <patient>/_F2A/<bvalue>/<station>.nii.gz)
-    python register_F2A.py /path/to/output_root --b-value 1000
+    # 2) Register DWI stations to anatomical WB (writes <patient>/_F2A/<bvalue>/<station>.nii.gz and <patient>/_F2A/ADC/<station>.nii.gz)
+    python register_F2A.py /path/to/output_root
     # 3) Refine via station-to-station overlap registration (writes <patient>/_S2S/...)
-    python register_S2S.py /path/to/output_root --b-value 1000
+    python register_S2S.py /path/to/output_root
     # 4) Merge stations into WB volumes (writes <patient>/_S2S/<bvalue>.nii.gz)
     python merge_after_registration.py /path/to/output_root --functional-subdir _S2S
     # (equivalently via the package CLI)
     # python -m Preprocessing.cli reconstruct-anatomical --root-dir /path/to/output_root
-    # python -m Preprocessing.cli register-f2a --root-dir /path/to/output_root --b-value 1000
-    # python -m Preprocessing.cli register-s2s --root-dir /path/to/output_root --b-value 1000
+    # python -m Preprocessing.cli register-f2a --root-dir /path/to/output_root
+    # python -m Preprocessing.cli register-s2s --root-dir /path/to/output_root
     # python -m Preprocessing.cli merge-after-registration --root-dir /path/to/output_root --functional-subdir _S2S
     ```
 10. Merge stations into whole-body volumes with feathered overlaps (station folders are removed after merge):
