@@ -7,8 +7,8 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import SimpleITK as sitk
 
+from Preprocessing.elastix_resample import resample_moving_to_fixed_crop, transform_from_elastix_parameter_map
 from Preprocessing.registration import (
-    _apply_transformix,
     _build_initial_transform,
     _compute_overlap_indices,
     _extract_overlap_images,
@@ -52,18 +52,22 @@ def register_station_to_station(
         _copy_all_stations(b_dirs, out_root)
         return out_root
 
+    reference_space = _load_reference_space(patient_dir, stations[0]["image"])
+
     center_idx = (len(stations) - 1) // 2
     _register_chain(
         stations[center_idx:],
         b_dirs=b_dirs,
         out_root=out_root,
         param_dir=out_root / "_params",
+        fixed_space=reference_space,
     )
     _register_chain(
         list(reversed(stations[: center_idx + 1])),
         b_dirs=b_dirs,
         out_root=out_root,
         param_dir=out_root / "_params",
+        fixed_space=reference_space,
     )
     return out_root
 
@@ -98,6 +102,7 @@ def _register_chain(
     b_dirs: List[Path],
     out_root: Path,
     param_dir: Path,
+    fixed_space: sitk.Image,
 ) -> None:
     if len(stations) < 2:
         return
@@ -133,6 +138,7 @@ def _register_chain(
             initial_transform=initial_transform,
             initial_transform_file=initial_transform_file,
         )
+        transform = transform_from_elastix_parameter_map(param_maps[0])
 
         station_name = _station_key(station["path"])
         param_file = param_dir / f"{station_name}_S2S_init.txt"
@@ -152,10 +158,10 @@ def _register_chain(
             out = out_root / b_dir.name / station["path"].name
             out.parent.mkdir(parents=True, exist_ok=True)
             moving_b = sitk.ReadImage(str(src))
-            result = _apply_transformix(moving_b, param_maps)
+            result = resample_moving_to_fixed_crop(moving_b, fixed_space, transform, interpolator=sitk.sitkLinear)
             sitk.WriteImage(result, str(out), True)
 
-        fixed_img = _apply_transformix(moving_img, param_maps)
+        fixed_img = resample_moving_to_fixed_crop(moving_img, fixed_space, transform, interpolator=sitk.sitkLinear)
 
 
 def _copy_all_stations(b_dirs: List[Path], out_root: Path) -> None:
@@ -195,6 +201,16 @@ def _load_station_dicts(modality_dir: Path) -> List[Dict]:
         )
     stations.sort(key=lambda s: (s["origin_z"], _station_index(s["path"]), s["path"].name))
     return stations
+
+
+def _load_reference_space(patient_dir: Path, fallback: sitk.Image) -> sitk.Image:
+    t1 = patient_dir / "T1.nii.gz"
+    if t1.exists():
+        try:
+            return sitk.ReadImage(str(t1))
+        except Exception:
+            return fallback
+    return fallback
 
 
 def _list_bvalue_dirs(root: Path) -> List[Path]:
@@ -278,4 +294,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-

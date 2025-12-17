@@ -7,8 +7,8 @@ from typing import Iterable, List, Optional, Sequence
 
 import SimpleITK as sitk
 
+from Preprocessing.elastix_resample import resample_moving_to_fixed_crop, transform_from_elastix_parameter_map
 from Preprocessing.registration import (
-    _apply_transformix,
     _compute_overlap_indices,
     _extract_overlap_images,
     _overlap_sampling_mask,
@@ -72,11 +72,14 @@ def register_functional_to_anatomical(
             moving=moving_roi,
             mask=mask,
             parameter_files=("S2A_Pair_Euler_WB.txt",),
-            output_reference=fixed_roi,
+            # The ROI is used for metric computation; resampling is handled explicitly
+            # to ensure correct fixed-space geometry.
+            output_reference=moving_1000,
             moving_origin=None,
             initial_transform=None,
             initial_transform_file=None,
         )
+        transform = transform_from_elastix_parameter_map(param_maps[0])
 
         param_path = out_root / "_params" / f"{station_name}_F2A.txt"
         try:
@@ -91,7 +94,7 @@ def register_functional_to_anatomical(
             out = out_root / b_dir.name / station_path.name
             out.parent.mkdir(parents=True, exist_ok=True)
             moving_img = sitk.ReadImage(str(src))
-            result = _apply_transformix(moving_img, param_maps)
+            result = resample_moving_to_fixed_crop(moving_img, fixed, transform, interpolator=sitk.sitkLinear)
             sitk.WriteImage(result, str(out), True)
 
     return out_root
@@ -237,4 +240,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-
