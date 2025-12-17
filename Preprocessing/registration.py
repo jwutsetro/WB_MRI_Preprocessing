@@ -38,30 +38,258 @@ def register_patient(patient_dir: Path) -> None:
 
 
 def register_wholebody_dwi_to_anatomical(patient_dir: Path) -> None:
-    """Register whole-body ADC to anatomical (T1) and apply the transform to DWI."""
+    """Rigidly register whole-body DWI/ADC to anatomical (T1) and resample onto the anatomical grid.
+
+    This step is intentionally conservative: for typical datasets where DWI and T1 are already
+    close to aligned, it avoids deformable registration and selects the best of (identity,
+    initialization, optimized) transforms by gradient-magnitude correlation to reduce the chance
+    of making the alignment worse.
+    """
     fixed_path = patient_dir / "T1.nii.gz"
-    moving_path = patient_dir / "ADC.nii.gz"
-    dwi_path = patient_dir / "dwi.nii.gz"
-    if not fixed_path.exists() or not moving_path.exists():
+    if not fixed_path.exists():
         fixed_path = _choose_anatomical_wb(patient_dir)
-        moving_path = _choose_dwi_wb(patient_dir)
-        dwi_path = moving_path if moving_path else dwi_path
-        if fixed_path is None or moving_path is None:
+        if fixed_path is None:
             return
+
+    dwi_targets = _wb_dwi_targets(patient_dir)
+    if not dwi_targets:
+        # Fallback for older layouts where only ADC exists.
+        adc_only = patient_dir / "ADC.nii.gz"
+        if adc_only.exists():
+            dwi_targets = [adc_only]
+        else:
+            return
+
+    moving_reg_path = next((p for p in dwi_targets if _modality_from_path(p).lower() == "adc"), None)
+    if moving_reg_path is None:
+        moving_reg_path = _choose_dwi_wb(patient_dir) or dwi_targets[0]
+
     fixed = sitk.ReadImage(str(fixed_path))
-    moving = sitk.ReadImage(str(moving_path))
-    param_maps = _run_elastix(
-        fixed=fixed,
-        moving=moving,
-        mask=None,
-        parameter_files=("S2A_Pair_Euler_WB.txt", "S2A_Pair_BSpline_WB.txt"),
+    moving_reg = sitk.ReadImage(str(moving_reg_path))
+    if fixed.GetDimension() != 3 or moving_reg.GetDimension() != 3:
+        return
+
+    transform = _estimate_rigid_transform_fixed_to_moving(fixed=fixed, moving=moving_reg)
+
+    for target_path in dwi_targets:
+        if not target_path.exists() or target_path.resolve() == fixed_path.resolve():
+            continue
+        moving = sitk.ReadImage(str(target_path))
+        if moving.GetDimension() != 3:
+            continue
+        registered = _resample_to_reference(moving=moving, reference=fixed, transform=transform)
+        sitk.WriteImage(registered, str(target_path), True)
+
+
+def _estimate_rigid_transform_fixed_to_moving(
+    *,
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    target_spacing_mm: float = 4.0,
+    metric_sampling_percentage: float = 0.2,
+    max_translation_mm: float = 120.0,
+    max_rotation_deg: float = 20.0,
+    min_eval_voxels: int = 2000,
+) -> sitk.Transform:
+    """Estimate a robust rigid transform (fixed->moving) for cross-modality WB ADC/DWI to anatomical.
+
+    Returns a transform suitable for `sitk.Resample(moving, fixed, transform, ...)`.
+    """
+    fixed_ds = _prepare_for_registration(fixed, target_spacing_mm=target_spacing_mm)
+    moving_ds = _prepare_for_registration(moving, target_spacing_mm=target_spacing_mm)
+    fixed_mask = _foreground_mask(fixed_ds)
+
+    initial = sitk.CenteredTransformInitializer(
+        fixed_ds,
+        moving_ds,
+        sitk.Euler3DTransform(),
+        sitk.CenteredTransformInitializerFilter.GEOMETRY,
     )
-    adc_reg = _apply_transformix(moving, param_maps)
-    sitk.WriteImage(adc_reg, str(moving_path), True)
-    if dwi_path.exists():
-        dwi_img = sitk.ReadImage(str(dwi_path))
-        dwi_reg = _apply_transformix(dwi_img, param_maps)
-        sitk.WriteImage(dwi_reg, str(dwi_path), True)
+
+    registration = sitk.ImageRegistrationMethod()
+    registration.SetInterpolator(sitk.sitkLinear)
+    registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    # RANDOM is more robust than REGULAR when the foreground mask is sparse/fragmented.
+    registration.SetMetricSamplingStrategy(registration.RANDOM)
+    registration.SetMetricSamplingPercentage(metric_sampling_percentage, seed=42)
+    registration.SetMetricFixedMask(fixed_mask)
+    registration.SetOptimizerAsGradientDescentLineSearch(
+        learningRate=1.0,
+        numberOfIterations=200,
+        convergenceMinimumValue=1e-6,
+        convergenceWindowSize=10,
+    )
+    registration.SetOptimizerScalesFromPhysicalShift()
+    registration.SetShrinkFactorsPerLevel([4, 2, 1])
+    registration.SetSmoothingSigmasPerLevel([2, 1, 0])
+    registration.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+    registration.SetInitialTransform(initial, inPlace=False)
+
+    identity = sitk.Transform(3, sitk.sitkIdentity)
+    try:
+        final = registration.Execute(fixed_ds, moving_ds)
+    except Exception as exc:
+        # Metric sampling can fail when masks/initialization lead to zero valid samples.
+        # Retry without masks as a last resort.
+        try:
+            registration = sitk.ImageRegistrationMethod()
+            registration.SetInterpolator(sitk.sitkLinear)
+            registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+            registration.SetMetricSamplingStrategy(registration.RANDOM)
+            registration.SetMetricSamplingPercentage(metric_sampling_percentage, seed=42)
+            registration.SetOptimizerAsGradientDescentLineSearch(
+                learningRate=1.0,
+                numberOfIterations=200,
+                convergenceMinimumValue=1e-6,
+                convergenceWindowSize=10,
+            )
+            registration.SetOptimizerScalesFromPhysicalShift()
+            registration.SetShrinkFactorsPerLevel([4, 2, 1])
+            registration.SetSmoothingSigmasPerLevel([2, 1, 0])
+            registration.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+            registration.SetInitialTransform(initial, inPlace=False)
+            final = registration.Execute(fixed_ds, moving_ds)
+        except Exception:
+            print(f"[registration] WB rigid ADC→T1 registration failed ({exc}); using identity transform.")
+            return identity
+
+    candidates: List[Tuple[str, sitk.Transform]] = [
+        ("identity", identity),
+        ("initial", initial),
+        ("final", final),
+    ]
+    best_name, best_transform = _select_best_transform_by_gradient_corr(
+        fixed=fixed_ds,
+        moving=moving_ds,
+        fixed_mask=fixed_mask,
+        candidates=candidates,
+        min_eval_voxels=min_eval_voxels,
+    )
+
+    if best_name != "identity":
+        translation_mm, rotation_deg = _rigid_motion_magnitude(best_transform)
+        if translation_mm > max_translation_mm or rotation_deg > max_rotation_deg:
+            print(
+                "[registration] Rejecting rigid transform due to excessive motion "
+                f"(translation={translation_mm:.1f}mm, rotation={rotation_deg:.1f}deg); using identity."
+            )
+            return identity
+
+    return best_transform
+
+
+def _prepare_for_registration(image: sitk.Image, *, target_spacing_mm: float) -> sitk.Image:
+    img = sitk.Cast(image, sitk.sitkFloat32)
+    img = sitk.RescaleIntensity(img, 0.0, 1.0)
+    return _downsample_to_spacing(img, target_spacing_mm=target_spacing_mm, interpolator=sitk.sitkLinear)
+
+
+def _downsample_to_spacing(image: sitk.Image, *, target_spacing_mm: float, interpolator: int) -> sitk.Image:
+    spacing = image.GetSpacing()
+    new_spacing = tuple(max(float(s), float(target_spacing_mm)) for s in spacing)
+    if all(abs(ns - s) < 1e-6 for ns, s in zip(new_spacing, spacing)):
+        return image
+
+    size = image.GetSize()
+    new_size = [
+        max(1, int(math.ceil(size[i] * spacing[i] / new_spacing[i])))
+        for i in range(image.GetDimension())
+    ]
+    resample = sitk.ResampleImageFilter()
+    resample.SetInterpolator(interpolator)
+    resample.SetOutputSpacing(new_spacing)
+    resample.SetSize(new_size)
+    resample.SetOutputOrigin(image.GetOrigin())
+    resample.SetOutputDirection(image.GetDirection())
+    resample.SetDefaultPixelValue(0.0)
+    resample.SetTransform(sitk.Transform(image.GetDimension(), sitk.sitkIdentity))
+    resample.SetOutputPixelType(sitk.sitkFloat32)
+    return resample.Execute(image)
+
+
+def _foreground_mask(image: sitk.Image) -> sitk.Image:
+    """Return a conservative foreground mask for registration sampling."""
+    try:
+        mask = sitk.OtsuThreshold(image, 0, 1, 128)
+        mask = sitk.Cast(mask, sitk.sitkUInt8)
+        mask = sitk.BinaryFillhole(mask)
+        mask = sitk.BinaryMorphologicalClosing(mask, [2, 2, 2])
+        if int(sitk.GetArrayViewFromImage(mask).sum()) == 0:
+            raise ValueError("empty mask")
+        return mask
+    except Exception:
+        return _ones_mask_like(image)
+
+
+def _select_best_transform_by_gradient_corr(
+    *,
+    fixed: sitk.Image,
+    moving: sitk.Image,
+    fixed_mask: sitk.Image,
+    candidates: Sequence[Tuple[str, sitk.Transform]],
+    min_eval_voxels: int,
+) -> Tuple[str, sitk.Transform]:
+    fixed_g = sitk.GradientMagnitude(sitk.SmoothingRecursiveGaussian(fixed, 1.0))
+    fixed_g = sitk.Cast(fixed_g, sitk.sitkFloat32)
+
+    fixed_arr = sitk.GetArrayViewFromImage(fixed_g)
+    mask_arr = sitk.GetArrayViewFromImage(fixed_mask).astype(bool)
+    if int(mask_arr.sum()) < min_eval_voxels:
+        mask_arr = np.ones_like(mask_arr, dtype=bool)
+
+    best_name = candidates[0][0]
+    best_transform = candidates[0][1]
+    best_score = float("-inf")
+    for name, transform in candidates:
+        moved = sitk.Resample(moving, fixed, transform, sitk.sitkLinear, 0.0, sitk.sitkFloat32)
+        moved_g = sitk.GradientMagnitude(sitk.SmoothingRecursiveGaussian(moved, 1.0))
+        moved_arr = sitk.GetArrayViewFromImage(moved_g)
+        score = _masked_correlation(fixed_arr, moved_arr, mask_arr)
+        if score > best_score:
+            best_score = score
+            best_name = name
+            best_transform = transform
+    return best_name, best_transform
+
+
+def _masked_correlation(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
+    a1 = np.asarray(a)[mask].astype(np.float32)
+    b1 = np.asarray(b)[mask].astype(np.float32)
+    if a1.size < 10 or b1.size < 10:
+        return float("-inf")
+    a1 = a1 - float(a1.mean())
+    b1 = b1 - float(b1.mean())
+    denom = float(np.linalg.norm(a1) * np.linalg.norm(b1))
+    if denom <= 0:
+        return float("-inf")
+    return float(np.dot(a1, b1) / denom)
+
+
+def _rigid_motion_magnitude(transform: sitk.Transform) -> Tuple[float, float]:
+    """Return (translation_mm, rotation_deg) for common rigid transforms."""
+    t = transform
+    if isinstance(t, sitk.CompositeTransform) and t.GetNumberOfTransforms() > 0:
+        t = t.GetBackTransform()
+    params = list(t.GetParameters())
+    if len(params) == 3:
+        translation = np.array(params, dtype=float)
+        return float(np.linalg.norm(translation)), 0.0
+    if len(params) == 6:
+        rotation_rad = np.array(params[:3], dtype=float)
+        translation = np.array(params[3:], dtype=float)
+        rotation_deg = float(np.max(np.abs(rotation_rad)) * 180.0 / math.pi)
+        return float(np.linalg.norm(translation)), rotation_deg
+    return float("inf"), float("inf")
+
+
+def _resample_to_reference(*, moving: sitk.Image, reference: sitk.Image, transform: sitk.Transform) -> sitk.Image:
+    resample = sitk.ResampleImageFilter()
+    resample.SetReferenceImage(reference)
+    resample.SetTransform(transform)
+    resample.SetInterpolator(sitk.sitkLinear)
+    resample.SetDefaultPixelValue(0.0)
+    resample.SetOutputPixelType(sitk.sitkFloat32)
+    return resample.Execute(moving)
 
 
 def _load_adc_stations(adc_dir: Path) -> List[Dict]:
@@ -384,10 +612,12 @@ def _wb_dwi_targets(patient_dir: Path) -> List[Path]:
                     candidate = patient_dir / entry
                     if candidate.exists() and (_is_bvalue(modality) or modality.lower() == "dwi"):
                         targets.append(candidate)
-    if not targets:
-        targets = [
-            p for p in patient_dir.glob("*.nii.gz") if _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
-        ]
+    # Always scan the patient root for WB DWI volumes so we include `ADC.nii.gz` and numeric b-values
+    # even when a combined `dwi.nii.gz` exists.
+    discovered = [
+        p for p in patient_dir.glob("*.nii.gz") if _is_dwi_modality(_modality_from_path(p)) and _looks_wholebody_name(p)
+    ]
+    targets.extend(discovered)
     targets = sorted(set(targets), key=lambda p: _modality_from_path(p))
     return targets
 
@@ -410,8 +640,15 @@ def _load_metadata(patient_dir: Path) -> Optional[Dict]:
 
 
 def _modality_from_path(path: Path) -> str:
-    name = path.stem
-    return name[:-3] if name.endswith("_WB") else name
+    name = path.name
+    stem = None
+    for suffix in (".nii.gz", ".nii", ".mha", ".mhd", ".nrrd"):
+        if name.endswith(suffix):
+            stem = name[: -len(suffix)]
+            break
+    if stem is None:
+        stem = path.stem
+    return stem[:-3] if stem.endswith("_WB") else stem
 
 
 def _candidate_paths(patient_dir: Path, modality: str) -> List[Path]:
@@ -422,8 +659,8 @@ def _candidate_paths(patient_dir: Path, modality: str) -> List[Path]:
 
 
 def _looks_wholebody_name(path: Path) -> bool:
-    stem = path.stem
-    return stem.endswith("_WB") or stem.isalpha() or _is_bvalue(stem)
+    stem = _modality_from_path(path)
+    return stem.isalpha() or _is_bvalue(stem) or path.name.endswith("_WB.nii.gz")
 
 
 def _anatomical_priority(modality: str) -> int:
