@@ -1,5 +1,5 @@
-input_dir: /path/to/raw_dicoms
-output_dir: /path/to/processed
+input_dir: /Volumes/T7_BU/data_root/MBD/dicom
+output_dir: /Volumes/T7_BU/data_root/MBD/nifti_dcm2niix
 working_dir: work
 target_orientation: LPS
 
@@ -9,7 +9,7 @@ dicom_converter: dcm2niix  # or "sitk"
 steps:
   # You can also set `steps: [dicom_sort, adc, noise_bias, isis]` to mean "only these steps".
   dicom_sort: true
-  eddy: false
+  eddy: true
   adc: true
   noise_bias: true
   isis: false
@@ -41,7 +41,7 @@ noise_bias:
 
 # Optional: DWI eddy-current + motion correction (FSL eddy). Skipped when FSL is not installed.
 eddy:
-  enable: false
+  enable: true
   phase_encoding: "0 1 0"
   total_readout_time: 0.05
   repol: true
