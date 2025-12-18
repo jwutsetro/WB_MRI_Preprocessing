@@ -43,6 +43,7 @@ class SequenceRule:
     target_orientation: str = "LPS"
     keep_all_series: bool = False
     background_threshold: Optional[float] = None
+    mask_threshold: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> "SequenceRule":
@@ -59,6 +60,7 @@ class SequenceRule:
             target_orientation=data.get("target_orientation", "LPS"),
             keep_all_series=data.get("keep_all_series", False),
             background_threshold=data.get("background_threshold"),
+            mask_threshold=data.get("mask_threshold"),
         )
 
 

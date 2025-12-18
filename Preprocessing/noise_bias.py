@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import json
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -7,6 +9,37 @@ import SimpleITK as sitk
 
 from Preprocessing.adc import compute_body_mask
 from Preprocessing.config import NoiseBiasConfig
+
+
+_N4_MIN_POSITIVE_INTENSITY = 1e-6
+_LOG_BIAS_FIELD_CLIP_ABS = 8.0
+_MAX_ABS_REASONABLE_INTENSITY = 1e9
+
+
+def _validate_spacing_nonzero(image: sitk.Image) -> None:
+    spacing = image.GetSpacing()
+    if any(float(s) <= 0.0 for s in spacing):
+        raise ValueError(f"Invalid image spacing (must be >0): {spacing}")
+
+
+def _validate_reasonable_intensity(image: sitk.Image, *, label: str) -> None:
+    stats = sitk.StatisticsImageFilter()
+    stats.Execute(sitk.Cast(image, sitk.sitkFloat32))
+    minimum = float(stats.GetMinimum())
+    maximum = float(stats.GetMaximum())
+    if not math.isfinite(minimum) or not math.isfinite(maximum):
+        raise ValueError(f"{label}: non-finite intensity range (min={minimum}, max={maximum})")
+    if max(abs(minimum), abs(maximum)) > _MAX_ABS_REASONABLE_INTENSITY:
+        raise ValueError(f"{label}: suspicious intensity range (min={minimum}, max={maximum})")
+
+
+def _write_image_atomic(image: sitk.Image, path: Path) -> None:
+    suffix = "".join(path.suffixes)
+    base = path.name[: -len(suffix)] if suffix else path.name
+    tmp_path = path.parent / f"{base}.tmp{suffix}"
+    sitk.WriteImage(image, str(tmp_path), True)
+    tmp_path.replace(path)
+
 
 def _is_bvalue_dir(name: str) -> bool:
     try:
@@ -44,7 +77,9 @@ def estimate_log_bias_field_n4(
 
     Returns a log-bias-field image defined on the input `image` geometry.
     """
+    _validate_spacing_nonzero(image)
     image_f = sitk.Cast(image, sitk.sitkFloat32)
+    image_f = sitk.Maximum(image_f, float(_N4_MIN_POSITIVE_INTENSITY))
     mask_u8 = _ensure_uint8_mask(mask, image_f)
     if shrink_factor > 1:
         factors = [int(shrink_factor)] * 3
@@ -73,7 +108,9 @@ def estimate_log_bias_field_n4(
     # Fallback: derive log-field from (input / corrected) on the resolution N4 ran on, then resample.
     corrected_safe = sitk.Add(sitk.Cast(corrected_small, sitk.sitkFloat32), 1e-6)
     image_small_f = sitk.Cast(image_small, sitk.sitkFloat32)
+    image_small_f = sitk.Maximum(image_small_f, float(_N4_MIN_POSITIVE_INTENSITY))
     ratio = sitk.Divide(image_small_f, corrected_safe)
+    ratio = sitk.Maximum(ratio, float(_N4_MIN_POSITIVE_INTENSITY))
     log_field_small = sitk.Log(ratio)
     log_field_small = sitk.Multiply(log_field_small, sitk.Cast(mask_small, sitk.sitkFloat32))
     log_field_small.CopyInformation(image_small)
@@ -91,6 +128,7 @@ def estimate_log_bias_field_n4(
 
 def apply_log_bias_field(image: sitk.Image, log_bias_field: sitk.Image) -> sitk.Image:
     """Apply a log bias field to an image (bias-correct via division)."""
+    _validate_spacing_nonzero(image)
     image_f = sitk.Cast(image, sitk.sitkFloat32)
     field = sitk.Cast(log_bias_field, sitk.sitkFloat32)
     if (
@@ -103,6 +141,7 @@ def apply_log_bias_field(image: sitk.Image, log_bias_field: sitk.Image) -> sitk.
         resampler.SetReferenceImage(image_f)
         resampler.SetInterpolator(sitk.sitkLinear)
         field = resampler.Execute(field)
+    field = sitk.Minimum(sitk.Maximum(field, -float(_LOG_BIAS_FIELD_CLIP_ABS)), float(_LOG_BIAS_FIELD_CLIP_ABS))
     corrected = sitk.Divide(image_f, sitk.Exp(field))
     corrected.CopyInformation(image)
     return corrected
@@ -127,17 +166,42 @@ def _write_mask(mask_root: Path, modality: str, station_file: Path, mask: sitk.I
     out_path = out_dir / station_file.name
     sitk.WriteImage(sitk.Cast(mask, sitk.sitkUInt8), str(out_path), True)
 
+def _load_mask_thresholds(patient_dir: Path) -> dict[str, float]:
+    """Load per-modality mask thresholds from `metadata.json` if present."""
+    meta_path = patient_dir / "metadata.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    modalities = meta.get("modalities", {}) if isinstance(meta, dict) else {}
+    thresholds: dict[str, float] = {}
+    for modality_name, info in modalities.items():
+        if not isinstance(info, dict):
+            continue
+        files = info.get("files", [])
+        if not isinstance(files, list) or not files:
+            continue
+        first = files[0]
+        if not isinstance(first, dict):
+            continue
+        val = first.get("mask_threshold")
+        if val is None:
+            continue
+        try:
+            thresholds[str(modality_name)] = float(val)
+        except Exception:
+            continue
+    return thresholds
 
-def _mask_for_image(image: sitk.Image, cfg: NoiseBiasConfig) -> sitk.Image:
-    return compute_body_mask(
-        image,
-        smoothing_sigma=float(cfg.mask_smoothing_sigma),
-        closing_radius=int(cfg.mask_closing_radius),
-        dilation_radius=int(cfg.mask_dilation_radius),
-    )
 
-
-def _process_anatomical(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Optional[Path]) -> None:
+def _process_anatomical(
+    patient_dir: Path,
+    cfg: NoiseBiasConfig,
+    mask_root: Optional[Path],
+    mask_thresholds: dict[str, float],
+) -> None:
     for modality_dir in sorted([p for p in patient_dir.iterdir() if p.is_dir()]):
         name = modality_dir.name
         if name.lower() == "adc" or name.lower() == cfg.mask_dir_name.lower():
@@ -146,7 +210,15 @@ def _process_anatomical(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Opti
             continue
         for station_file in _iter_station_files(modality_dir):
             image = sitk.ReadImage(str(station_file))
-            mask = _mask_for_image(image, cfg)
+            thr = mask_thresholds.get(name)
+            mask = compute_body_mask(
+                image,
+                smoothing_sigma=float(cfg.mask_smoothing_sigma),
+                closing_radius=int(cfg.mask_closing_radius),
+                dilation_radius=int(cfg.mask_dilation_radius),
+                threshold=thr,
+                padding_threshold=0.0,
+            )
             if mask_root is not None:
                 _write_mask(mask_root, name, station_file, mask)
             log_field = estimate_log_bias_field_n4(
@@ -159,13 +231,15 @@ def _process_anatomical(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Opti
             corrected = apply_log_bias_field(image, log_field)
             if cfg.apply_body_mask:
                 corrected = apply_body_mask(corrected, mask)
-            sitk.WriteImage(corrected, str(station_file), True)
+            _validate_reasonable_intensity(corrected, label=f"{name}/{station_file.name}")
+            _write_image_atomic(corrected, station_file)
 
 
 def _choose_dwi_reference_dir(patient_dir: Path, cfg: NoiseBiasConfig) -> Optional[Path]:
     b_dirs = [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue_dir(p.name)]
     if not b_dirs:
-        return None
+        dwi_dir = patient_dir / "dwi"
+        return dwi_dir if dwi_dir.is_dir() else None
     if cfg.dwi_reference.lower() == "b0":
         for d in b_dirs:
             if abs(float(d.name)) < 1e-6:
@@ -173,10 +247,16 @@ def _choose_dwi_reference_dir(patient_dir: Path, cfg: NoiseBiasConfig) -> Option
     return min(b_dirs, key=lambda p: float(p.name))
 
 
-def _process_dwi(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Optional[Path]) -> None:
-    b_dirs = sorted([p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue_dir(p.name)], key=lambda p: float(p.name))
-    if not b_dirs:
-        return
+def _process_dwi(
+    patient_dir: Path,
+    cfg: NoiseBiasConfig,
+    mask_root: Optional[Path],
+    mask_thresholds: dict[str, float],
+) -> None:
+    b_dirs = sorted(
+        [p for p in patient_dir.iterdir() if p.is_dir() and _is_bvalue_dir(p.name)],
+        key=lambda p: float(p.name),
+    )
     ref_dir = _choose_dwi_reference_dir(patient_dir, cfg)
     if ref_dir is None:
         return
@@ -185,10 +265,27 @@ def _process_dwi(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Optional[Pa
     if not station_files:
         return
 
+    mask_dir: Optional[Path] = None
+    if b_dirs:
+        mask_dir = max(b_dirs, key=lambda p: float(p.name))
+    else:
+        mask_dir = ref_dir
+
+    dwi_thr = mask_thresholds.get("DWI") or mask_thresholds.get("dwi")
+
     # Estimate per-station bias fields from the reference (lowest-b) volume and apply to all b-values.
     for station_file in station_files:
         b0_img = sitk.ReadImage(str(station_file))
-        mask = _mask_for_image(b0_img, cfg)
+        mask_img_path = (mask_dir / station_file.name) if mask_dir is not None else station_file
+        mask_img = sitk.ReadImage(str(mask_img_path)) if mask_img_path.exists() else b0_img
+        mask = compute_body_mask(
+            mask_img,
+            smoothing_sigma=float(cfg.mask_smoothing_sigma),
+            closing_radius=int(cfg.mask_closing_radius),
+            dilation_radius=int(cfg.mask_dilation_radius),
+            threshold=dwi_thr,
+            padding_threshold=0.0,
+        )
         if mask_root is not None:
             _write_mask(mask_root, "dwi", station_file, mask)
         log_field = estimate_log_bias_field_n4(
@@ -206,21 +303,23 @@ def _process_dwi(patient_dir: Path, cfg: NoiseBiasConfig, mask_root: Optional[Pa
             corrected = apply_log_bias_field(image, log_field)
             if cfg.apply_body_mask:
                 corrected = apply_body_mask(corrected, mask)
-            sitk.WriteImage(corrected, str(target), True)
+            _validate_reasonable_intensity(corrected, label=f"{b_dir.name}/{station_file.name}")
+            _write_image_atomic(corrected, target)
 
 
 def process_patient(patient_dir: Path, cfg: Optional[NoiseBiasConfig] = None) -> None:
     """Run bias correction + optional body masking for a patient output directory."""
     cfg = cfg or NoiseBiasConfig()
+    mask_thresholds = _load_mask_thresholds(patient_dir)
     mask_root: Optional[Path] = None
     if cfg.save_masks:
         mask_root = patient_dir / cfg.mask_dir_name
         mask_root.mkdir(parents=True, exist_ok=True)
 
     if cfg.apply_to_anatomical:
-        _process_anatomical(patient_dir, cfg, mask_root)
+        _process_anatomical(patient_dir, cfg, mask_root, mask_thresholds)
     if cfg.apply_to_dwi:
-        _process_dwi(patient_dir, cfg, mask_root)
+        _process_dwi(patient_dir, cfg, mask_root, mask_thresholds)
 
 
 def process_root(root_dir: Path, cfg: Optional[NoiseBiasConfig] = None) -> None:

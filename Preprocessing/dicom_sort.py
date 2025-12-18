@@ -13,26 +13,31 @@ from Preprocessing.config import PipelineConfig, SequenceRule
 from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
 
-def _crop_zero_padding_z(image: sitk.Image, threshold: float = 0.0) -> sitk.Image:
-    """Trim leading/trailing slices along z that are all below threshold, preserving spatial info."""
+def _crop_zero_padding(image: sitk.Image, threshold: float = 0.0) -> sitk.Image:
+    """Trim empty padding along all axes where |I| <= threshold.
+
+    Uses an ROI extraction so spacing/direction are preserved and origin is updated correctly.
+    """
+    if image.GetDimension() != 3:
+        return image
     arr = sitk.GetArrayFromImage(image)  # z, y, x
-    non_zero = np.abs(arr) > threshold
-    z_any = non_zero.any(axis=(1, 2))
-    if not z_any.any():
+    non_empty = np.abs(arr) > threshold
+    if not non_empty.any():
         return image
+    z_any = non_empty.any(axis=(1, 2))
+    y_any = non_empty.any(axis=(0, 2))
+    x_any = non_empty.any(axis=(0, 1))
     z_idx = np.where(z_any)[0]
-    z_start, z_end = int(z_idx[0]), int(z_idx[-1] + 1)
-    if z_start == 0 and z_end == arr.shape[0]:
+    y_idx = np.where(y_any)[0]
+    x_idx = np.where(x_any)[0]
+    z0, z1 = int(z_idx[0]), int(z_idx[-1] + 1)
+    y0, y1 = int(y_idx[0]), int(y_idx[-1] + 1)
+    x0, x1 = int(x_idx[0]), int(x_idx[-1] + 1)
+    if (z0, y0, x0) == (0, 0, 0) and (z1, y1, x1) == arr.shape:
         return image
-    cropped_arr = arr[z_start:z_end, :, :]
-    cropped = sitk.GetImageFromArray(cropped_arr)
-    cropped = sitk.Cast(cropped, image.GetPixelID())
-    cropped.SetSpacing(image.GetSpacing())
-    cropped.SetDirection(image.GetDirection())
-    origin = image.GetOrigin()
-    spacing = image.GetSpacing()
-    cropped.SetOrigin((origin[0], origin[1], origin[2] + z_start * spacing[2]))
-    return cropped
+    size = [int(x1 - x0), int(y1 - y0), int(z1 - z0)]
+    index = [int(x0), int(y0), int(z0)]
+    return sitk.RegionOfInterest(image, size=size, index=index)
 
 
 def _largest_component(mask: sitk.Image) -> sitk.Image:
@@ -259,41 +264,6 @@ class DicomSorter:
         sitk.WriteImage(image, str(output_path), True)
         return output_path, image
 
-    def _body_mask_from_high_b(self, image: sitk.Image, background_threshold: float = 5.0) -> sitk.Image:
-        """Build a body mask from the highest b-value image using threshold + largest components."""
-        arr = sitk.GetArrayFromImage(image).astype(np.float32)
-        background_arr = (arr < background_threshold).astype(np.uint8)
-        background = sitk.GetImageFromArray(background_arr)
-        background.CopyInformation(image)
-        background = _largest_component(background)
-
-        body_arr = 1 - sitk.GetArrayFromImage(background).astype(np.uint8)
-        body = sitk.GetImageFromArray(body_arr)
-        body.CopyInformation(image)
-        body = _largest_component(body)
-        body.CopyInformation(image)
-        return body
-
-    def _build_dwi_body_masks(self, entries: List[Dict]) -> Dict[str, sitk.Image]:
-        """Create per-series body masks using the highest b-value image available."""
-        by_series: Dict[str, List[Dict]] = {}
-        for entry in entries:
-            by_series.setdefault(entry["series_uid"], []).append(entry)
-
-        masks: Dict[str, sitk.Image] = {}
-
-        def _b_to_float(b_val: Optional[str]) -> float:
-            try:
-                return float(b_val) if b_val is not None else float("-inf")
-            except ValueError:
-                return float("-inf")
-
-        for series_uid, series_entries in by_series.items():
-            best_entry = max(series_entries, key=lambda e: _b_to_float(e["b_value"]))
-            mask = self._body_mask_from_high_b(best_entry["image"])
-            masks[series_uid] = mask
-        return masks
-
     def sort_and_convert(self, patient_dir: Path, output_dir: Path) -> List[Path]:
         """Return list of written NIfTI files; also writes patient metadata JSON."""
         instances = self._collect_instances(patient_dir)
@@ -312,7 +282,7 @@ class DicomSorter:
             sorted_files = [str(inst.filepath) for inst in sorted(items, key=lambda x: x.instance_number)]
             reader.SetFileNames(sorted_files)
             image = self._orient_image(reader.Execute(), self.cfg.target_orientation)
-            image = _crop_zero_padding_z(image)
+            image = _crop_zero_padding(image)
             origin = image.GetOrigin()
             temp_entries.append(
                 {
@@ -376,21 +346,11 @@ class DicomSorter:
             for idx, (series_uid, _) in enumerate(sorted(series_origins.items(), key=lambda kv: kv[1]), start=1):
                 series_order[series_uid] = idx
 
-            dwi_masks: Dict[str, sitk.Image] = {}
-            if canonical.lower() == "dwi":
-                dwi_masks = self._build_dwi_body_masks(entries)
-
             for entry in entries:
                 rule: SequenceRule = entry["rule"]
                 station_idx = series_order.get(entry["series_uid"], 0)
                 target_modality = "T1" if entry["rule"].is_anatomical else canonical
                 image_to_write = entry["image"]
-                if canonical.lower() == "dwi":
-                    mask = dwi_masks.get(entry["series_uid"])
-                    if mask is not None:
-                        masked_img = sitk.Mask(image_to_write, mask, outsideValue=0)
-                        masked_img.CopyInformation(image_to_write)
-                        image_to_write = masked_img
                 written_path, image = self._write_series(
                     rule=rule,
                     b_value=entry["b_value"],
@@ -411,6 +371,8 @@ class DicomSorter:
                         "file": str(written_path.relative_to(output_dir)),
                         "series_description": entry["instances"][0].series_description,
                         "protocol_name": entry["instances"][0].protocol_name,
+                        "background_threshold": rule.background_threshold,
+                        "mask_threshold": rule.mask_threshold,
                         "spacing": image.GetSpacing(),
                         "size": image.GetSize(),
                         "origin": image.GetOrigin(),

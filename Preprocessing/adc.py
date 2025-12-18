@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import math
+
 import numpy as np
 import SimpleITK as sitk
 from Preprocessing.utils import prune_dwi_directories
@@ -18,65 +20,78 @@ def _largest_component(mask: sitk.Image) -> sitk.Image:
 
 
 def compute_body_mask(
-    image: sitk.Image, smoothing_sigma: float = 1.0, closing_radius: int = 1, dilation_radius: int = 1
+    image: sitk.Image,
+    smoothing_sigma: float = 1.0,
+    closing_radius: int = 1,
+    dilation_radius: int = 1,
+    *,
+    threshold: float | None = None,
+    padding_threshold: float = 0.0,
 ) -> sitk.Image:
-    """Estimate a robust body mask using central Otsu, cleanup, and fallbacks for noisy DWI volumes."""
+    """Compute a body mask via fixed threshold + connected components.
+
+    Algorithm (legacy behavior):
+    1) Remove empty-padding borders (voxels with |I| <= padding_threshold).
+    2) Threshold remaining voxels to form a candidate body mask.
+    3) Keep the largest connected component (body).
+    4) Invert mask, keep the largest connected component (outside background).
+    5) Invert again (fills low-intensity holes inside the body, e.g. lungs).
+
+    `threshold` is treated as a minimum; an adaptive floor based on the image's
+    upper tail is also applied to reduce background noise leakage.
+    """
     img_float = sitk.Cast(image, sitk.sitkFloat32)
     arr = sitk.GetArrayFromImage(img_float).astype(np.float32)
+
     empty_mask = sitk.Image(img_float.GetSize(), sitk.sitkUInt8)
     empty_mask.CopyInformation(img_float)
     if arr.size == 0:
         return empty_mask
 
-    positive = arr[arr > 0]
-    if positive.size == 0:
+    non_empty = np.abs(arr) > float(padding_threshold)
+    if not non_empty.any():
         return empty_mask
 
-    cap = np.percentile(positive, 99.5)
-    arr = np.clip(arr, 0.0, cap)
-    clipped = sitk.GetImageFromArray(arr)
-    clipped.CopyInformation(img_float)
+    z_any = non_empty.any(axis=(1, 2))
+    y_any = non_empty.any(axis=(0, 2))
+    x_any = non_empty.any(axis=(0, 1))
+    z_idx = np.where(z_any)[0]
+    y_idx = np.where(y_any)[0]
+    x_idx = np.where(x_any)[0]
+    z0, z1 = int(z_idx[0]), int(z_idx[-1] + 1)
+    y0, y1 = int(y_idx[0]), int(y_idx[-1] + 1)
+    x0, x1 = int(x_idx[0]), int(x_idx[-1] + 1)
 
-    # Restrict Otsu threshold search to the central FOV to avoid air-dominated histograms.
-    z, y, x = arr.shape
-    margin_y = max(1, y // 8)
-    margin_x = max(1, x // 8)
-    y0, y1 = margin_y, max(margin_y + 1, y - margin_y)
-    x0, x1 = margin_x, max(margin_x + 1, x - margin_x)
-    center_mask_arr = np.zeros_like(arr, dtype=np.uint8)
-    center_mask_arr[:, y0:y1, x0:x1] = 1
-    center_mask = sitk.GetImageFromArray(center_mask_arr)
-    center_mask.CopyInformation(img_float)
+    roi = arr[z0:z1, y0:y1, x0:x1]
+    positive = roi[roi > 0]
+    adaptive_floor = 0.0
+    if positive.size:
+        p99 = float(np.percentile(positive, 99.0))
+        adaptive_floor = max(0.0, 0.02 * p99)
+        if not math.isfinite(adaptive_floor):
+            adaptive_floor = 0.0
+    thr = max(float(threshold or 0.0), float(adaptive_floor))
 
-    smoothed = sitk.DiscreteGaussian(clipped, variance=smoothing_sigma**2)
-    otsu = sitk.OtsuThresholdImageFilter()
-    otsu.SetInsideValue(1)
-    otsu.SetOutsideValue(0)
-    otsu.SetMaskValue(1)
-    mask = otsu.Execute(smoothed, center_mask)
-    if closing_radius > 0:
-        mask = sitk.BinaryMorphologicalClosing(mask, [closing_radius] * 3)
-    mask = sitk.BinaryFillhole(mask)
-    mask = _largest_component(mask)
-    if dilation_radius > 0:
-        mask = sitk.BinaryDilate(mask, [dilation_radius] * 3)
+    mask_arr = np.zeros_like(arr, dtype=np.uint8)
+    roi_mask = (roi > thr).astype(np.uint8)
+    mask_arr[z0:z1, y0:y1, x0:x1] = roi_mask
+
+    mask = sitk.GetImageFromArray(mask_arr)
     mask.CopyInformation(image)
+    mask = _largest_component(mask)
 
-    # Fallback: if mask is too permissive or too sparse, use a percentile-based threshold.
-    coverage = float(np.mean(sitk.GetArrayFromImage(mask)))
-    if coverage > 0.8 or coverage < 0.005:
-        fallback_thresh = np.percentile(positive, 15.0)
-        fallback_arr = (arr >= fallback_thresh).astype(np.uint8)
-        fallback = sitk.GetImageFromArray(fallback_arr)
-        fallback.CopyInformation(image)
-        fallback = sitk.BinaryFillhole(fallback)
-        fallback = _largest_component(fallback)
-        if dilation_radius > 0:
-            fallback = sitk.BinaryDilate(fallback, [dilation_radius] * 3)
-        fallback.CopyInformation(image)
-        mask = fallback
+    inv = sitk.GetImageFromArray((1 - sitk.GetArrayFromImage(mask).astype(np.uint8)).astype(np.uint8))
+    inv.CopyInformation(image)
+    inv = _largest_component(inv)
+    filled = sitk.GetImageFromArray((1 - sitk.GetArrayFromImage(inv).astype(np.uint8)).astype(np.uint8))
+    filled.CopyInformation(image)
 
-    return mask
+    if closing_radius > 0:
+        filled = sitk.BinaryMorphologicalClosing(filled, [int(closing_radius)] * 3)
+    if dilation_radius > 0:
+        filled = sitk.BinaryDilate(filled, [int(dilation_radius)] * 3)
+    filled.CopyInformation(image)
+    return filled
 
 
 def _linear_fit_adc(b_values: List[float], log_signals: np.ndarray) -> np.ndarray:
