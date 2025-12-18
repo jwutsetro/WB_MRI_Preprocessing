@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+import tempfile
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import SimpleITK as sitk
@@ -10,6 +11,7 @@ import numpy as np
 
 
 from Preprocessing.config import PipelineConfig, SequenceRule
+from Preprocessing.dcm2niix import load_bvals, run_dcm2niix
 from Preprocessing.utils import ANATOMICAL_PRIORITY, prune_anatomical_modalities
 
 
@@ -217,7 +219,12 @@ class DicomSorter:
             if rule is None:
                 self._log_unknown(patient=instance.filepath.parents[1].name, instance=instance, metadata=meta)
                 continue
-            key = (rule.name, instance.series_uid, instance.b_value)
+            canonical = rule.canonical_modality or rule.output_modality
+            if canonical.lower() == "dwi" and self.cfg.dicom_converter == "dcm2niix":
+                # keep full series together; dcm2niix will output 4D + bvals which we split later
+                key = (rule.name, instance.series_uid, None)
+            else:
+                key = (rule.name, instance.series_uid, instance.b_value)
             grouped.setdefault(key, []).append(instance)
         return grouped
 
@@ -226,6 +233,138 @@ class DicomSorter:
             return sitk.DICOMOrient(image, target_orientation)
         except Exception:
             return image
+
+    def _read_group_image(self, instances: Sequence[DicomInstance]) -> sitk.Image:
+        """Read a DICOM instance group to a SimpleITK image using the configured converter."""
+        if self.cfg.dicom_converter == "sitk":
+            reader = sitk.ImageSeriesReader()
+            sorted_files = [str(inst.filepath) for inst in sorted(instances, key=lambda x: x.instance_number)]
+            reader.SetFileNames(sorted_files)
+            return reader.Execute()
+
+        with tempfile.TemporaryDirectory(prefix="dcm2niix_in_") as in_tmp, tempfile.TemporaryDirectory(
+            prefix="dcm2niix_out_"
+        ) as out_tmp:
+            in_dir = Path(in_tmp)
+            for idx, inst in enumerate(sorted(instances, key=lambda x: x.instance_number)):
+                link_path = in_dir / f"{idx:06d}.dcm"
+                try:
+                    link_path.symlink_to(inst.filepath)
+                except Exception:
+                    # fallback to copying if symlinks are not allowed
+                    link_path.write_bytes(inst.filepath.read_bytes())
+            result = run_dcm2niix(input_dir=in_dir, output_dir=Path(out_tmp), filename="converted")
+            return sitk.ReadImage(str(result.nifti_path))
+
+    def _read_dwi_series(self, instances: Sequence[DicomInstance]) -> tuple[sitk.Image, Optional[list[float]]]:
+        """Convert a DWI series to NIfTI and return (image, bvals)."""
+        if self.cfg.dicom_converter == "sitk":
+            # Legacy path: relies on per-instance b_value grouping elsewhere; no bvals here.
+            return self._read_group_image(instances), None
+
+        with tempfile.TemporaryDirectory(prefix="dcm2niix_in_") as in_tmp, tempfile.TemporaryDirectory(
+            prefix="dcm2niix_out_"
+        ) as out_tmp:
+            in_dir = Path(in_tmp)
+            for idx, inst in enumerate(sorted(instances, key=lambda x: x.instance_number)):
+                link_path = in_dir / f"{idx:06d}.dcm"
+                try:
+                    link_path.symlink_to(inst.filepath)
+                except Exception:
+                    link_path.write_bytes(inst.filepath.read_bytes())
+            result = run_dcm2niix(input_dir=in_dir, output_dir=Path(out_tmp), filename="converted")
+            image = sitk.ReadImage(str(result.nifti_path))
+            bvals = load_bvals(result.bval_path) if result.bval_path is not None else None
+            return image, bvals
+
+    def _dwi_volumes_by_b(
+        self, image_4d: sitk.Image, bvals: list[float]
+    ) -> tuple[dict[int, list[sitk.Image]], tuple[int, int, int], tuple[int, int, int]]:
+        """Split a 4D DWI image into 3D volumes grouped by integer b-value.
+
+        Returns:
+        - volumes_by_b: {b_int: [3D volume images (oriented)]}
+        - crop_index_xyz, crop_size_xyz: ROI to trim empty padding consistently across b-values
+        """
+        if image_4d.GetDimension() != 4:
+            raise ValueError("Expected 4D DWI NIfTI from dcm2niix.")
+        size4 = list(image_4d.GetSize())
+        t_size = int(size4[3])
+        if len(bvals) != t_size:
+            raise ValueError(f"bvals length ({len(bvals)}) does not match 4D size ({t_size}).")
+
+        oriented_vols: list[sitk.Image] = []
+        vols_by_b: dict[int, list[sitk.Image]] = {}
+
+        # Extract + orient all volumes so cropping indices are in final orientation.
+        extract_size = size4[:]
+        extract_size[3] = 0
+        for t in range(t_size):
+            vol = sitk.Extract(image_4d, extract_size, [0, 0, 0, int(t)])
+            vol = self._orient_image(vol, self.cfg.target_orientation)
+            oriented_vols.append(vol)
+            b_int = int(round(float(bvals[t])))
+            vols_by_b.setdefault(b_int, []).append(vol)
+
+        # Compute a consistent crop bbox across all volumes (remove empty padding).
+        union_nonempty = None
+        for vol in oriented_vols:
+            arr = sitk.GetArrayFromImage(vol)  # z,y,x
+            nonempty = (np.abs(arr) > 0).astype(np.uint8)
+            union_nonempty = nonempty if union_nonempty is None else np.maximum(union_nonempty, nonempty)
+        if union_nonempty is None or not union_nonempty.any():
+            # no data; don't crop
+            return vols_by_b, (0, 0, 0), tuple(int(s) for s in oriented_vols[0].GetSize())
+
+        z_any = union_nonempty.any(axis=(1, 2))
+        y_any = union_nonempty.any(axis=(0, 2))
+        x_any = union_nonempty.any(axis=(0, 1))
+        z_idx = np.where(z_any)[0]
+        y_idx = np.where(y_any)[0]
+        x_idx = np.where(x_any)[0]
+        z0, z1 = int(z_idx[0]), int(z_idx[-1] + 1)
+        y0, y1 = int(y_idx[0]), int(y_idx[-1] + 1)
+        x0, x1 = int(x_idx[0]), int(x_idx[-1] + 1)
+        crop_index = (x0, y0, z0)
+        crop_size = (x1 - x0, y1 - y0, z1 - z0)
+        return vols_by_b, crop_index, crop_size
+
+    def _mean_volume(self, volumes: list[sitk.Image]) -> sitk.Image:
+        if len(volumes) == 1:
+            return volumes[0]
+        arrays = [sitk.GetArrayFromImage(v).astype(np.float32) for v in volumes]
+        mean_arr = np.mean(np.stack(arrays, axis=0), axis=0).astype(np.float32)
+        out = sitk.GetImageFromArray(mean_arr)
+        out.CopyInformation(volumes[0])
+        return out
+
+    def _write_dwi_split(
+        self,
+        *,
+        rule: SequenceRule,
+        image: sitk.Image,
+        bvals: list[float],
+        patient_output: Path,
+        station_idx: int,
+    ) -> List[Tuple[Path, sitk.Image, int]]:
+        """Write DWI as per-b-value 3D station files and return written paths with b-values."""
+        vols_by_b, crop_index, crop_size = self._dwi_volumes_by_b(image, bvals)
+        written: List[Tuple[Path, sitk.Image, int]] = []
+        for b_int, volumes in sorted(vols_by_b.items(), key=lambda kv: kv[0]):
+            mean_vol = self._mean_volume(volumes)
+            if crop_size != tuple(int(s) for s in mean_vol.GetSize()):
+                mean_vol = sitk.RegionOfInterest(mean_vol, size=crop_size, index=crop_index)
+            b_dir = str(int(b_int))
+            out_path, out_img = self._write_series(
+                rule=rule,
+                b_value=b_dir,
+                instances=[],
+                patient_output=patient_output,
+                station_idx=station_idx,
+                image=mean_vol,
+            )
+            written.append((out_path, out_img, int(b_int)))
+        return written
 
     def _write_series(
         self,
@@ -271,10 +410,33 @@ class DicomSorter:
         temp_entries = []
         for (rule_name, series_uid, b_value), items in grouped.items():
             rule = next(r for r in self.cfg.sequence_rules if r.name == rule_name)
-            reader = sitk.ImageSeriesReader()
-            sorted_files = [str(inst.filepath) for inst in sorted(items, key=lambda x: x.instance_number)]
-            reader.SetFileNames(sorted_files)
-            image = self._orient_image(reader.Execute(), self.cfg.target_orientation)
+            canonical = rule.canonical_modality or rule.output_modality
+            if canonical.lower() == "dwi" and self.cfg.dicom_converter == "dcm2niix":
+                image, bvals = self._read_dwi_series(items)
+                # Use the first volume as a representative for station ordering.
+                origin = image.GetOrigin()
+                if image.GetDimension() == 4:
+                    size4 = list(image.GetSize())
+                    extract_size = size4[:]
+                    extract_size[3] = 0
+                    vol0 = sitk.Extract(image, extract_size, [0, 0, 0, 0])
+                    vol0 = self._orient_image(vol0, self.cfg.target_orientation)
+                    vol0 = _crop_zero_padding(vol0)
+                    origin = vol0.GetOrigin()
+                temp_entries.append(
+                    {
+                        "rule": rule,
+                        "series_uid": series_uid,
+                        "b_value": b_value,
+                        "instances": items,
+                        "origin": origin,
+                        "image": image,
+                        "bvals": bvals,
+                    }
+                )
+                continue
+
+            image = self._orient_image(self._read_group_image(items), self.cfg.target_orientation)
             image = _crop_zero_padding(image)
             origin = image.GetOrigin()
             temp_entries.append(
@@ -343,6 +505,43 @@ class DicomSorter:
                 rule: SequenceRule = entry["rule"]
                 station_idx = series_order.get(entry["series_uid"], 0)
                 target_modality = "T1" if entry["rule"].is_anatomical else canonical
+                if canonical.lower() == "dwi" and self.cfg.dicom_converter == "dcm2niix":
+                    bvals = entry.get("bvals")
+                    if not bvals:
+                        raise RuntimeError(
+                            f"dcm2niix did not produce bvals for DWI series {entry['series_uid']} "
+                            f"(patient={patient_dir.name})."
+                        )
+                    dwi_written = self._write_dwi_split(
+                        rule=rule,
+                        image=entry["image"],
+                        bvals=list(bvals),
+                        patient_output=output_dir,
+                        station_idx=station_idx,
+                    )
+                    used_dicoms.update(inst.filepath for inst in entry["instances"])
+                    for written_path, image, b_int in dwi_written:
+                        written.append(written_path)
+                        modality_entries.setdefault(canonical, []).append(
+                            {
+                                "rule": rule.name,
+                                "canonical_modality": canonical,
+                                "series_uid": entry["series_uid"],
+                                "b_value": b_int,
+                                "station_index": station_idx,
+                                "file": str(written_path.relative_to(output_dir)),
+                                "series_description": entry["instances"][0].series_description,
+                                "protocol_name": entry["instances"][0].protocol_name,
+                                "background_threshold": rule.background_threshold,
+                                "mask_threshold": rule.mask_threshold,
+                                "spacing": image.GetSpacing(),
+                                "size": image.GetSize(),
+                                "origin": image.GetOrigin(),
+                                "direction": image.GetDirection(),
+                            }
+                        )
+                    continue
+
                 image_to_write = entry["image"]
                 written_path, image = self._write_series(
                     rule=rule,

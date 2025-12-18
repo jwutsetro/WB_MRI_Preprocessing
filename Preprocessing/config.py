@@ -196,6 +196,7 @@ class PipelineConfig:
     target_orientation: str = "LPS"
     unknown_sequence_log: Path = Path("logs/unknown_sequences.jsonl")
     dicom_rules_path: Path = Path("dicom_config.json")
+    dicom_converter: str = "dcm2niix"  # "dcm2niix" or "sitk"
     sequence_rules: List[SequenceRule] = field(default_factory=list)
     steps: StepConfig = field(default_factory=StepConfig)
     noise_bias: NoiseBiasConfig = field(default_factory=NoiseBiasConfig)
@@ -212,6 +213,9 @@ class PipelineConfig:
         nyul_cfg = NyulConfig.from_dict(data.get("nyul", {}))
         if "station_labels" in (data or {}):
             print("[config] 'station_labels' is deprecated and ignored (stations are numeric).")
+        dicom_converter = str(data.get("dicom_converter", "dcm2niix")).strip().lower()
+        if dicom_converter not in ("dcm2niix", "sitk"):
+            raise ValueError("dicom_converter must be 'dcm2niix' or 'sitk'.")
         return cls(
             input_dir=Path(data["input_dir"]),
             output_dir=Path(data["output_dir"]),
@@ -219,6 +223,7 @@ class PipelineConfig:
             target_orientation=data.get("target_orientation", "LPS"),
             unknown_sequence_log=Path(data.get("unknown_sequence_log", "logs/unknown_sequences.jsonl")),
             dicom_rules_path=rules_path,
+            dicom_converter=dicom_converter,
             sequence_rules=rules,
             steps=steps,
             noise_bias=noise_bias_cfg,

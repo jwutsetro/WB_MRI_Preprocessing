@@ -4,6 +4,7 @@ working_dir: work
 target_orientation: LPS
 
 dicom_rules_path: dicom_config.json
+dicom_converter: dcm2niix  # or "sitk"
 
 steps:
   # You can also set `steps: [dicom_sort, adc, noise_bias, isis]` to mean "only these steps".
