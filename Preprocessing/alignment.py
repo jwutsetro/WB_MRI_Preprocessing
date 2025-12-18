@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import traceback
 from typing import List, Sequence
 
 import numpy as np
@@ -134,15 +135,26 @@ class AlignmentRunner:
         if self.patient_dir is not None:
             patient_output = self.cfg.output_dir / (self.patient_id or self.patient_dir.name)
             patient_output.mkdir(parents=True, exist_ok=True)
-            self._run_patient(self.patient_dir, patient_output)
+            try:
+                self._run_patient(self.patient_dir, patient_output)
+            except Exception:
+                self._write_patient_error(patient_input=self.patient_dir, patient_output=patient_output)
             return
 
         patients = sorted([p for p in self.cfg.input_dir.iterdir() if p.is_dir()])
         patients = chunk_by_array_index(patients, self.array_index, self.array_size)
+        failures: List[str] = []
         for patient in tqdm(patients, desc="patients"):
             patient_output = self.cfg.output_dir / patient.name
             patient_output.mkdir(parents=True, exist_ok=True)
-            self._run_patient(patient, patient_output)
+            try:
+                self._run_patient(patient, patient_output)
+            except Exception:
+                failures.append(patient.name)
+                self._write_patient_error(patient_input=patient, patient_output=patient_output)
+                continue
+        if failures:
+            print(f"[WARN] Failed patients: {len(failures)} (see each patient's pipeline_error.txt)")
 
     def _run_patient(self, patient_input: Path, patient_output: Path) -> None:
         written: List[Path] = []
@@ -161,6 +173,28 @@ class AlignmentRunner:
             self._run_reconstruct(patient_output)
         if self.cfg.steps.resample_to_t1:
             self._run_resample_to_t1(patient_output)
+
+    def _write_patient_error(self, *, patient_input: Path, patient_output: Path) -> None:
+        """Write the current exception traceback to a per-patient text file.
+
+        This is intended to keep long batch runs going when a single patient's data
+        is corrupt or otherwise triggers an unexpected error.
+        """
+        error_path = patient_output / "pipeline_error.txt"
+        tb = traceback.format_exc()
+        error_path.write_text(
+            "\n".join(
+                [
+                    "WB_MRI_Preprocessing patient failure",
+                    f"patient_input: {patient_input}",
+                    f"patient_output: {patient_output}",
+                    "",
+                    tb.rstrip(),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
     def _run_adc(self, patient_output: Path) -> None:
         compute_adc_for_patient(patient_output)
