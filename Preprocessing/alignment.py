@@ -134,6 +134,9 @@ class AlignmentRunner:
     def run(self) -> None:
         if self.patient_dir is not None:
             patient_output = self.cfg.output_dir / (self.patient_id or self.patient_dir.name)
+            if self._patient_has_nifti_outputs(patient_output):
+                print(f"[SKIP] {patient_output.name}: output already exists ({patient_output})")
+                return
             patient_output.mkdir(parents=True, exist_ok=True)
             try:
                 self._run_patient(self.patient_dir, patient_output)
@@ -144,8 +147,12 @@ class AlignmentRunner:
         patients = sorted([p for p in self.cfg.input_dir.iterdir() if p.is_dir()])
         patients = chunk_by_array_index(patients, self.array_index, self.array_size)
         failures: List[str] = []
+        skipped: List[str] = []
         for patient in tqdm(patients, desc="patients"):
             patient_output = self.cfg.output_dir / patient.name
+            if self._patient_has_nifti_outputs(patient_output):
+                skipped.append(patient.name)
+                continue
             patient_output.mkdir(parents=True, exist_ok=True)
             try:
                 self._run_patient(patient, patient_output)
@@ -153,6 +160,8 @@ class AlignmentRunner:
                 failures.append(patient.name)
                 self._write_patient_error(patient_input=patient, patient_output=patient_output)
                 continue
+        if skipped:
+            print(f"[INFO] Skipped existing patients: {len(skipped)}")
         if failures:
             print(f"[WARN] Failed patients: {len(failures)} (see each patient's pipeline_error.txt)")
 
@@ -173,6 +182,20 @@ class AlignmentRunner:
             self._run_reconstruct(patient_output)
         if self.cfg.steps.resample_to_t1:
             self._run_resample_to_t1(patient_output)
+
+    def _patient_has_nifti_outputs(self, patient_output: Path) -> bool:
+        """Return True when a patient's output folder already contains NIfTI outputs.
+
+        This is used to resume interrupted batch runs by skipping patients that
+        have already produced any `.nii`/`.nii.gz` outputs.
+        """
+        if not patient_output.exists():
+            return False
+        try:
+            next(patient_output.rglob("*.nii*"))
+        except StopIteration:
+            return False
+        return True
 
     def _write_patient_error(self, *, patient_input: Path, patient_output: Path) -> None:
         """Write the current exception traceback to a per-patient text file.
