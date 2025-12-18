@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
+import shutil
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import SimpleITK as sitk
@@ -256,15 +257,12 @@ class DicomSorter:
             result = run_dcm2niix(input_dir=in_dir, output_dir=Path(out_tmp), filename="converted")
             return sitk.ReadImage(str(result.nifti_path))
 
-    def _read_dwi_series(self, instances: Sequence[DicomInstance]) -> tuple[sitk.Image, Optional[list[float]]]:
-        """Convert a DWI series to NIfTI and return (image, bvals)."""
-        if self.cfg.dicom_converter == "sitk":
-            # Legacy path: relies on per-instance b_value grouping elsewhere; no bvals here.
-            return self._read_group_image(instances), None
-
-        with tempfile.TemporaryDirectory(prefix="dcm2niix_in_") as in_tmp, tempfile.TemporaryDirectory(
-            prefix="dcm2niix_out_"
-        ) as out_tmp:
+    def _convert_dwi_series_to_cache(self, instances: Sequence[DicomInstance], cache_dir: Path):
+        """Run dcm2niix for a DWI series and cache outputs on disk for reuse."""
+        if self.cfg.dicom_converter != "dcm2niix":
+            raise RuntimeError("_convert_dwi_series_to_cache requires dicom_converter=dcm2niix")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="dcm2niix_in_") as in_tmp:
             in_dir = Path(in_tmp)
             for idx, inst in enumerate(sorted(instances, key=lambda x: x.instance_number)):
                 link_path = in_dir / f"{idx:06d}.dcm"
@@ -272,10 +270,7 @@ class DicomSorter:
                     link_path.symlink_to(inst.filepath)
                 except Exception:
                     link_path.write_bytes(inst.filepath.read_bytes())
-            result = run_dcm2niix(input_dir=in_dir, output_dir=Path(out_tmp), filename="converted")
-            image = sitk.ReadImage(str(result.nifti_path))
-            bvals = load_bvals(result.bval_path) if result.bval_path is not None else None
-            return image, bvals
+            return run_dcm2niix(input_dir=in_dir, output_dir=cache_dir, filename="dwi")
 
     def _dwi_volumes_by_b(
         self, image_4d: sitk.Image, bvals: list[float]
@@ -412,8 +407,11 @@ class DicomSorter:
             rule = next(r for r in self.cfg.sequence_rules if r.name == rule_name)
             canonical = rule.canonical_modality or rule.output_modality
             if canonical.lower() == "dwi" and self.cfg.dicom_converter == "dcm2niix":
-                image, bvals = self._read_dwi_series(items)
-                # Use the first volume as a representative for station ordering.
+                dwi_cache_dir = output_dir / "_dwi_cache" / series_uid
+                result = self._convert_dwi_series_to_cache(items, dwi_cache_dir)
+                image = sitk.ReadImage(str(result.nifti_path))
+                bvals = load_bvals(result.bval_path) if result.bval_path is not None else None
+                # Use the first extracted/oriented/cropped volume as representative for station ordering.
                 origin = image.GetOrigin()
                 if image.GetDimension() == 4:
                     size4 = list(image.GetSize())
@@ -432,6 +430,8 @@ class DicomSorter:
                         "origin": origin,
                         "image": image,
                         "bvals": bvals,
+                        "dwi_cache_dir": dwi_cache_dir,
+                        "dwi_result": result,
                     }
                 )
                 continue
@@ -512,6 +512,29 @@ class DicomSorter:
                             f"dcm2niix did not produce bvals for DWI series {entry['series_uid']} "
                             f"(patient={patient_dir.name})."
                         )
+                    raw_dir = output_dir / self.cfg.eddy.raw_dwi_dir_name
+                    raw_dir.mkdir(parents=True, exist_ok=True)
+                    station_name = str(int(station_idx))
+                    result = entry.get("dwi_result")
+                    cache_dir = entry.get("dwi_cache_dir")
+                    if result is not None:
+                        # Move raw 4D + sidecars into a stable per-station raw folder for later preprocessing (e.g., eddy).
+                        for src, dst in [
+                            (result.nifti_path, raw_dir / result.nifti_path.name.replace("dwi", station_name, 1)),
+                            (result.bval_path, raw_dir / f"{station_name}.bval" if result.bval_path else None),
+                            (result.bvec_path, raw_dir / f"{station_name}.bvec" if result.bvec_path else None),
+                            (result.json_path, raw_dir / f"{station_name}.json" if result.json_path else None),
+                        ]:
+                            if src is None or dst is None:
+                                continue
+                            try:
+                                if dst.exists():
+                                    dst.unlink()
+                                src.replace(dst)
+                            except Exception:
+                                shutil.copy2(src, dst)
+                        if cache_dir is not None:
+                            shutil.rmtree(cache_dir, ignore_errors=True)
                     dwi_written = self._write_dwi_split(
                         rule=rule,
                         image=entry["image"],

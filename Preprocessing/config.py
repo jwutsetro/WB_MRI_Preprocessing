@@ -69,6 +69,7 @@ class StepConfig:
     """Toggles for each pipeline step."""
 
     dicom_sort: bool = True
+    eddy: bool = False
     adc: bool = True
     noise_bias: bool = True
     isis: bool = True
@@ -187,6 +188,38 @@ class NoiseBiasConfig:
 
 
 @dataclass
+class EddyConfig:
+    """Optional FSL eddy-current + motion correction for DWI.
+
+    This requires FSL to be installed (eddy/eddy_openmp on PATH).
+    It is intentionally opt-in and will be skipped when prerequisites are missing.
+    """
+
+    enable: bool = False
+    phase_encoding: str = "0 1 0"  # FSL-style PE unit vector
+    total_readout_time: float = 0.05  # seconds
+    repol: bool = True
+    out_dir_name: str = "_eddy"
+    raw_dwi_dir_name: str = "_dwi_raw"
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "EddyConfig":
+        defaults = cls()
+        if data is None:
+            return defaults
+        if not isinstance(data, dict):
+            raise TypeError("eddy must be a mapping.")
+        merged = {**defaults.__dict__, **(data or {})}
+        merged["enable"] = bool(merged.get("enable", defaults.enable))
+        merged["phase_encoding"] = str(merged.get("phase_encoding", defaults.phase_encoding))
+        merged["total_readout_time"] = float(merged.get("total_readout_time", defaults.total_readout_time))
+        merged["repol"] = bool(merged.get("repol", defaults.repol))
+        merged["out_dir_name"] = str(merged.get("out_dir_name", defaults.out_dir_name))
+        merged["raw_dwi_dir_name"] = str(merged.get("raw_dwi_dir_name", defaults.raw_dwi_dir_name))
+        return cls(**merged)
+
+
+@dataclass
 class PipelineConfig:
     """Top-level configuration for the preprocessing pipeline."""
 
@@ -200,6 +233,7 @@ class PipelineConfig:
     sequence_rules: List[SequenceRule] = field(default_factory=list)
     steps: StepConfig = field(default_factory=StepConfig)
     noise_bias: NoiseBiasConfig = field(default_factory=NoiseBiasConfig)
+    eddy: EddyConfig = field(default_factory=EddyConfig)
     nyul: NyulConfig = field(default_factory=NyulConfig)
 
     @classmethod
@@ -210,6 +244,7 @@ class PipelineConfig:
         rules = _load_sequence_rules(rules_path, data.get("sequences", []))
         steps = StepConfig.from_dict(data.get("steps", {}))
         noise_bias_cfg = NoiseBiasConfig.from_dict(data.get("noise_bias", {}))
+        eddy_cfg = EddyConfig.from_dict(data.get("eddy", {}))
         nyul_cfg = NyulConfig.from_dict(data.get("nyul", {}))
         if "station_labels" in (data or {}):
             print("[config] 'station_labels' is deprecated and ignored (stations are numeric).")
@@ -227,6 +262,7 @@ class PipelineConfig:
             sequence_rules=rules,
             steps=steps,
             noise_bias=noise_bias_cfg,
+            eddy=eddy_cfg,
             nyul=nyul_cfg,
         )
 

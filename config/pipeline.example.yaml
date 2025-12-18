@@ -9,6 +9,7 @@ dicom_converter: dcm2niix  # or "sitk"
 steps:
   # You can also set `steps: [dicom_sort, adc, noise_bias, isis]` to mean "only these steps".
   dicom_sort: true
+  eddy: false
   adc: true
   noise_bias: true
   isis: false
@@ -37,6 +38,15 @@ noise_bias:
   n4_shrink_factor_dwi: 4
   n4_max_iterations: [50, 50, 30, 20]
   n4_convergence_threshold: 1.0e-4
+
+# Optional: DWI eddy-current + motion correction (FSL eddy). Skipped when FSL is not installed.
+eddy:
+  enable: false
+  phase_encoding: "0 1 0"
+  total_readout_time: 0.05
+  repol: true
+  out_dir_name: _eddy
+  raw_dwi_dir_name: _dwi_raw
 
 # Dataset-level standardisation (run separately via `python -m Preprocessing nyul --config ...`)
 nyul:

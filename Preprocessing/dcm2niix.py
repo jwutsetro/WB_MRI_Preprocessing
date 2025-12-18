@@ -79,3 +79,11 @@ def load_bvals(path: Path) -> List[float]:
     raw = path.read_text(encoding="utf-8").strip().split()
     return [float(x) for x in raw if x.strip()]
 
+
+def load_bvecs(path: Path) -> List[List[float]]:
+    """Load b-vectors from a FSL-style .bvec file (3 rows)."""
+    lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rows = [[float(x) for x in ln.split()] for ln in lines]
+    if len(rows) != 3:
+        raise ValueError("Expected 3-row .bvec file.")
+    return rows

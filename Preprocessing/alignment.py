@@ -11,6 +11,7 @@ from tqdm import tqdm
 from Preprocessing.config import PipelineConfig, STEP_ALIASES
 from Preprocessing.adc import compute_adc_for_patient
 from Preprocessing.dicom_sort import DicomSorter
+from Preprocessing.eddy import run_eddy_for_patient
 from Preprocessing.noise_bias import process_patient as run_noise_bias
 from Preprocessing.isis import standardize_patient
 from Preprocessing.registration import register_patient, register_wholebody_dwi_to_anatomical
@@ -19,6 +20,7 @@ from Preprocessing.merge_wb import merge_patient
 
 ALIGNMENT_STEP_ORDER: List[str] = [
     "dicom_sort",
+    "eddy",
     "noise_bias",
     "adc",
     "registration",
@@ -73,6 +75,7 @@ def pipeline_select_steps(
 def pipeline_apply_step_selection(cfg: PipelineConfig, selected_steps: set[str]) -> None:
     """Mutate cfg.steps to match the selected step set."""
     cfg.steps.dicom_sort = "dicom_sort" in selected_steps
+    cfg.steps.eddy = "eddy" in selected_steps
     cfg.steps.adc = "adc" in selected_steps
     cfg.steps.noise_bias = "noise_bias" in selected_steps
     cfg.steps.registration = "registration" in selected_steps
@@ -170,6 +173,8 @@ class AlignmentRunner:
         if self.cfg.steps.dicom_sort:
             sorter = DicomSorter(self.cfg, interactive=self.interactive)
             written = sorter.sort_and_convert(patient_input, patient_output)
+        if self.cfg.steps.eddy:
+            self._run_eddy(patient_output)
         if self.cfg.steps.noise_bias:
             self._run_bias(patient_output)
         if self.cfg.steps.adc:
@@ -221,6 +226,9 @@ class AlignmentRunner:
 
     def _run_adc(self, patient_output: Path) -> None:
         compute_adc_for_patient(patient_output)
+
+    def _run_eddy(self, patient_output: Path) -> None:
+        run_eddy_for_patient(patient_output, self.cfg.eddy, target_orientation=self.cfg.target_orientation)
 
     def _run_bias(self, patient_output: Path) -> None:
         run_noise_bias(patient_output, cfg=self.cfg.noise_bias)
